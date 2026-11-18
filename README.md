@@ -1,6 +1,6 @@
 # Codex Path Native Bridge
 
-A small, backend-only [codex-proxy-rs (CPR)](https://github.com/zyycn/codex-proxy-rs) plugin for compatible Codex clients that request `/v1/codex/responses` instead of CPR's native `/v1/responses` endpoint. It changes the path, not the client or protocol.
+A small [codex-proxy-rs (CPR)](https://github.com/zyycn/codex-proxy-rs) plugin that bridges `/v1/codex/responses` to CPR's native `/v1/responses` endpoint and adds a single-request SVG pelican animation playground. The path bridge changes the path, not the client or protocol.
 
 ## Routing contract
 
@@ -17,18 +17,56 @@ Absolute URI authority is preserved. The existing request is passed to the SDK's
 
 CPR owns authentication, client-key access scope, account selection, native Codex protocol handling, SSE streaming, WebSocket sessions, continuation and accounting. This bridge does not implement authentication, a model catalog, an upstream adapter or client-specific tooling. It does not make incompatible clients compatible with CPR's protocol. Clients already using `/v1/responses` do not need this alias.
 
+## Pelican animation page (0.4.0)
+
+Open **鹈鹕** from the installed plugin's management pages. Select an enabled Client Key, a model visible to that Key, and a reasoning effort (default `low`), then click **开始测试**. One click sends one Responses request; account selection, access rules, quota and accounting remain with CPR. Loading the page reads available Key/model metadata and saved records without generating an animation.
+
+The prompt is fixed, including the original spelling:
+
+```text
+用svg绘制一个2D鹈鹏骑自行车的动画的html，不要用skill，不用测试
+```
+
+The page consumes native Responses SSE or JSON. Each finished attempt appears under **生成记录**, newest first, with its manual/scheduled source, model, effort, Client Key, upstream account, outcome, timings and token counts. Click its thumbnail for a larger animation, or **源码** to see the original output. The dialog includes time to first content and options to copy the HTML or download it in standalone mode. Viewing a record never sends a generation request. Missing usage stays unknown. A response must complete and contain an SVG before the page marks it generated. Incomplete, failed and stopped attempts keep any available source and have their own status. **停止生成** cancels the current manual request.
+
+Standalone history stays in the current browser and origin; the CPR page keeps its own history per plugin instance using CPR's private state API. Both keep up to 20 records and evict the oldest when their size budget fills (2 MiB in the browser, 240 KiB in CPR). Oversize outputs keep only their metadata. CPR records the non-secret Key ID/name and looks up the actual routed account by the gateway request ID, checking that the usage row belongs to that Key. Missing usage or account data stays unknown; the account ID can be shown when its display name is unavailable. Standalone records show a short Key fingerprint and cannot resolve the upstream account. Neither mode persists API Key secrets. Older records remain readable; missing identity fields are not backfilled.
+
+### Schedule a test in CPR
+
+Expand **定时测试**, choose a Client Key, a model and a reasoning effort, then enter a five-field Cron rule and an IANA time zone. For example, `0 9 * * 1-5` with `Asia/Shanghai` means 09:00 Monday through Friday in that zone. Select **启用计划** and **保存计划** to arm it. Each plugin instance has one plan; it is off until explicitly enabled. The panel shows the next eligible time. **暂停计划** stops future runs; any already claimed run can finish.
+
+CPR runs the plan in its maintenance callback while the plugin and host are running, even with the browser closed. The plugin durably claims each eligible minute before issuing one Responses generation using the fixed prompt and the selected Key's normal routing and usage rules. CPR's callback interval means the request need not start at second zero. Missed minutes are skipped. A claimed minute is not retried across a restart, and an interrupted run is recorded when maintenance resumes and its claim expires. A model run has a 90-second ceiling, further bounded by the host's call budget. Results go into the same history table, which refreshes in a visible CPR page. Standalone mode only supports manual runs.
+
+The pinned CPR management-page loader explicitly rejects nested iframe elements, injects `frame-src 'none'`, and uses `sandbox="allow-scripts"` without download permission. The hosted page therefore projects the generated SVG into an isolated image document, supporting SVG CSS/SMIL animation; it does not execute generated HTML scripts in the plugin page. Use **HTML 源码** and **复制 HTML** for the complete output. HTML/JavaScript-driven animations require the standalone mode described below. These boundaries follow the [pinned host page assembler](https://github.com/zyycn/codex-proxy-rs/blob/c622f085748f812936a7371fcc85d1621fa72ca8/frontend/src/views/plugins/management/frame.ts) and [iframe component](https://github.com/zyycn/codex-proxy-rs/blob/c622f085748f812936a7371fcc85d1621fa72ca8/frontend/src/views/plugins/components/PluginManagementFrame.vue).
+
+### Standalone page
+
+From the repository root, start the standalone page with Node.js 22 or newer:
+
+```sh
+node scripts/serve-pelican.mjs
+```
+
+Open `http://127.0.0.1:3217/` (or choose another port with `--port 3218`). No frontend build or dependency installation is needed. Choose **连接网关**, enter your gateway URL (with or without a final `/v1`) and **API 密钥（Client Key）**, and load its model list. This is the model API key, not an administrator key. When installed in CPR, the page hides this connection UI and uses the host bridge instead.
+
+The local service listens only on `127.0.0.1` and exposes the page plus the two model API routes. It checks Host and Origin, forwards only the selected gateway's model-list and Responses requests, disables redirects, and does not store or log API keys. Browser requests go through this same-origin service, so the gateway does not need to permit cross-origin requests from a `file:` page. Stopping generation closes the upstream stream. Opening `web/pelican.html` directly remains available for layout preview, but direct gateway requests then require the gateway's CORS support. Connection failures are shown inside the open dialog with distinct network, timeout, HTTP 401, HTTP 403 and endpoint errors.
+
+Standalone mode displays the generated HTML in a separate sandboxed iframe with inline scripts/styles permitted and external networking blocked, and offers HTML download. It uses the same fixed prompt and sends a single `POST /v1/responses` request. Opening the page or connecting only reads the model catalog; it never automatically generates an animation. Reconnect after reloading the page.
+
+The plugin adds administrator-only `GET /bootstrap` and `POST /models` management routes to read non-secret Key summaries and the selected Key's model list. `GET /history` and `POST /history` read and append generation records in the private `pelican-history` namespace. `GET /schedule`, `POST /schedule` and `POST /schedule/pause` manage the plan in `pelican-schedule`. The plugin never reads account credentials. `web/pelican.html` is declared in both the author manifest and management registration; the existing packaging CLI collects it without an additional build step.
+
 ## Compatibility
 
-- Source/package version: `0.3.12`.
-- Declared host contract: manifest schema 2, package RPC protocol 7, and `middleware` 6 on the `http` stage; this package declares no other capability. The host range is `>=3.33.0, <4.0.0`. `3.33.0` is the first host release this package targets, and `<4.0.0` marks a new major contract to evaluate, not a per-minor ceiling. The package is not compatible with the RPC v6 packages released as `0.2.x`, nor with the older RPC used by `0.1.x`.
+- Source/package version: `0.4.0`.
+- Declared host contract: manifest schema 2, package RPC protocol 7, `middleware` 6 on the `http` stage, `management` 2 and `maintenance` 1. This version targets `>=3.44.0, <4.0.0`, using the pinned `v3.44.0` page bridge and host callbacks. `<4.0.0` marks a new major contract to evaluate. The package is not compatible with the RPC v6 packages released as `0.2.x`, nor with the older RPC used by `0.1.x`.
 - CPR `3.34.0` and later check the manifest schema version, the package protocol version, every declared capability version and the host range independently, against the contract each host publishes in `backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json`. A host that publishes this package's declarations accepts and starts it regardless of its minor version. A host that does not reports the specific mismatch at install, version planning and startup, and an administrator's per-start risk confirmation does not survive a host restart. The bridge itself contains no host-version check.
-- Supported is not the same as live-tested. CPR `3.33.0` through `3.44.0` are the releases where a package from this source line was installed, activated or carried across a host upgrade and observed enabled/running with `compatibilityWarning` null; see [Verification](#verification). CPR `3.45.0` and `3.45.1` publish a byte-identical `plugin-host-compatibility.json` (same schema 2, RPC 7 and capability versions), and their SDK delta is in host-callback data types this package neither constructs nor calls (key-budget window calls, credit-reset status and a renamed runtime-settings field), while the frame codecs, session driver, middleware call types and `PluginBuilder` are unchanged, so `0.3.12` declares them supported without claiming a live installation there.
+- Supported is not the same as live-tested. The previous `0.3.x` path-only source line was observed running on CPR releases through `3.44.0`; the `0.3.12` contract review also covered `3.45.0` and `3.45.1`. Those historical observations do not verify the new `0.4.0` management page or its generation flow; see [Verification](#verification).
 - Official SDK and packaging CLI pinned to CPR revision `c622f085748f812936a7371fcc85d1621fa72ca8` (`v3.44.0`). The pin records the SDK and package contract this source is built against, not the newest host release, so a host-only update does not move it. The `v3.44.0` SDK delta was additive (`HostClient::proxy_http`, `HostClient::list_proxies` and their wire types), left the frame codecs, session driver, middleware call types and `PluginBuilder` unchanged, and this package calls none of the new functions.
 - Host-only updates: after upgrading CPR within the declared range, verify the installed package on the new host (reported enabled/running, `compatibilityWarning` null, `loadError` null, configuration and middleware binding intact) and keep it. Do not publish, rebuild or reinstall a bridge package for a host version change alone. A new bridge release is warranted only by a bridge implementation or dependency change, a change to the host contract this package declares, or a host that stops accepting it.
 - A `0.3.4` package declares `<3.38.0`, a `0.3.5` package declares `<3.39.0`, a `0.3.6` package declares `<3.40.0`, a `0.3.7` package declares `<3.41.0`, a `0.3.8` package declares `<3.42.0`, a `0.3.9` package declares `<3.43.0`, a `0.3.10` package declares `<3.44.0` and a `0.3.11` package declares `<3.45.0`, so each stays unstarted after an upgrade past its range; use `0.3.12` on CPR `3.33.x` and later `3.x` releases that publish the declared contract.
 - Stable plugin ID: `selfhosted.omp-native-bridge`. The legacy machine name is retained for identity continuity; it does not restrict the plugin to one client.
 
-The public repository is [codex-path-native-bridge](https://github.com/ninthcj/codex-path-native-bridge). The Rust package/binary keeps its existing name, `cpr-omp-native-bridge`.
+The public release repository is [hl9565/codex-path-native-bridge](https://github.com/hl9565/codex-path-native-bridge). The Rust package/binary keeps its existing name, `cpr-omp-native-bridge`.
 
 ## Build and package
 
@@ -48,11 +86,11 @@ The default target is derived from `rustc --print host-tuple`. Build for the CPR
 make package TARGET=x86_64-unknown-linux-gnu
 ```
 
-An explicit target requires its Rust target components and a suitable linker/toolchain. A macOS package cannot be installed as a Linux plugin. Generated binaries, packages and local CLI tools are excluded from the source repository. Linux x86_64 packages and SHA-256 checksums are available in [GitHub Releases](https://github.com/ninthcj/codex-path-native-bridge/releases); other targets can be built from source.
+An explicit target requires its Rust target components and a suitable linker/toolchain. A macOS package cannot be installed as a Linux plugin. Generated binaries, packages and local CLI tools are excluded from the source repository. Linux x86_64 packages and SHA-256 checksums are available in [GitHub Releases](https://github.com/hl9565/codex-path-native-bridge/releases); other targets can be built from source.
 
 ## Install in CPR
 
-1. In CPR's **Plugin Management**, choose **GitHub** and enter `ninthcj/codex-path-native-bridge`. Select `v0.3.12` (or a later compatible release) and the archive matching the host platform. Use the published SHA-256 when requested.
+1. In CPR's **Plugin Management**, choose **GitHub** and enter `hl9565/codex-path-native-bridge`. Set the tag to `v0.4.0` for the Pelican page, keep download authentication set to none, and use the SHA-256 published with the Linux x86_64 archive. A `0.3.x` package contains only the path bridge.
 2. Alternatively, build a package for the host platform and choose **uploaded package** to install the archive from `dist/`.
 3. Review the publisher, name, version, target platform and digest. Confirm installation only if you trust the code and its source.
 4. Confirm the configuration is enabled and published. This plugin has no configuration parameters or secrets. For an existing installation, review and confirm the switch to the new package version rather than assuming upload alone changes the active version.
@@ -67,6 +105,10 @@ This plugin contributes **global HTTP middleware**, before routing and authentic
 The implementation does not itself read or store credentials. It still receives the HTTP request, including its headers, through the trusted middleware contract. Do not disable it while clients depend on the alias: disabling it removes this path rewrite, not CPR's native endpoint.
 
 ## Verification
+
+Run `node --test tests/pelican-page.test.mjs tests/pelican-server.test.mjs` (or `make web-test`) to check the page and loopback service with mock responses and credentials. This covers single-request behavior, request ID attribution, history reopening, schedule settings and pause, connection/stream behavior and the loopback route restrictions. Run `cargo test --locked` to check the routing, Cron/time zone behavior and the real plugin process against a simulated CPR host. The process tests exercise identity reconciliation, durable claims, repeated maintenance callbacks, failure records and pause. The standalone page was exercised with a live CPR response before history was added; the records for `0.3.x` below describe older releases.
+
+The Linux x86_64 `0.4.0` package was verified, uploaded, and activated on an isolated CPR `3.44.0` host. With a loopback fixture upstream, one manual and one background run both produced an SVG and resolved to the routed account and selected Key. The scheduled run saved tokens and source without a browser page, and pausing cleared the next run. No online gateway or real model credentials were used.
 
 The three deterministic routing tests cover:
 
@@ -123,6 +165,14 @@ This project's source is licensed under [Apache License 2.0](LICENSE).
 It depends on CPR's official `gateway-plugin-sdk`, which inherits `Apache-2.0` from the [pinned upstream workspace](https://github.com/zyycn/codex-proxy-rs/blob/c622f085748f812936a7371fcc85d1621fa72ca8/backend/Cargo.toml). The pinned upstream root contains no `NOTICE` file. Dependencies remain under their respective licenses; this project's license does not relicense them. Binary redistributors must also satisfy the licenses of the dependencies they distribute.
 
 ## Changes
+
+### 0.4.0
+
+Add an inline **生成记录** table, with one row per run and an animation thumbnail that opens the saved result at a larger size. Persist standalone records in the browser and hosted records in CPR's private plugin state.
+
+Add an administrator-facing **鹈鹕** page with a fixed SVG animation prompt, one Responses request per click, model/reasoning selection, stream cancellation, usage/timing metrics, source copying and result preview. Keep the existing HTTP path rewrite, stable plugin ID and SDK/CLI pin; the hosted page requires CPR `>=3.44.0, <4.0.0`.
+
+Show the Client Key and upstream account for each hosted run by correlating its CPR request ID with usage. Add a Cron/time zone plan, with manual and scheduled results in the same history and one generation per claimed minute.
 
 ### 0.3.12
 

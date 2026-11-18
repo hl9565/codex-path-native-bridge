@@ -3,15 +3,46 @@
   "publisher": "selfhosted",
   "name": "omp-native-bridge",
   "displayName": "Codex Path Native Bridge",
-  "version": "0.3.12",
-  "description": "Forward native Codex HTTP and WebSocket handshake paths to CPR's native responses route.",
+  "version": "0.4.0",
+  "description": "Bridge native Codex paths and run manual or scheduled single-request SVG pelican tests.",
   "license": "Apache-2.0",
   "engines": {
-    "codex-proxy-rs": ">=3.33.0, <4.0.0"
+    "codex-proxy-rs": ">=3.44.0, <4.0.0"
   },
   "main": "bin/plugin",
   "runtime": "trustedProcess",
+  "resources": {
+    "web/pelican.html": "text/html"
+  },
+  "state": [
+    {
+      "namespace": "pelican-history",
+      "schemaVersion": 1,
+      "schema": {
+        "type": "array",
+        "maxItems": 20,
+        "items": { "type": "object" }
+      },
+      "maximumRecords": 1,
+      "maximumBytes": 262144,
+      "maximumValueBytes": 262144
+    },
+    {
+      "namespace": "pelican-schedule",
+      "schemaVersion": 1,
+      "schema": { "type": "object" },
+      "maximumRecords": 1,
+      "maximumBytes": 8192,
+      "maximumValueBytes": 8192
+    }
+  ],
   "contributes": {
+    "maintenance": {
+      "version": 1
+    },
+    "management": {
+      "version": 2
+    },
     "middleware": {
       "version": 6,
       "stages": ["http"]

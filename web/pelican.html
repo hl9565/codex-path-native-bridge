@@ -1,0 +1,1399 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>鹈鹕 · SVG 动画测试</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #edf5ff; --card: #fff; --ink: #233246; --muted: #7a899c;
+      --line: #e8eef6; --blue: #3478f6; --blue-ink: #2363d8; --soft: #edf4ff;
+      --green: #149b74; --green-bg: #edf9f3; --warning: #ae7416;
+      --shadow: 0 6px 30px #395c9010; --stage: #f9fbfe;
+      font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    [data-theme="dark"] {
+      color-scheme: dark; --page: #151d2a; --card: #1e293b; --ink: #e4ecf8;
+      --muted: #96a7bd; --line: #2d3c52; --blue: #79a8ff; --blue-ink: #a9c8ff;
+      --soft: #273c5b; --green: #69d4b3; --green-bg: #203e38; --warning: #e6bb70;
+      --shadow: 0 6px 30px #0002; --stage: #192434;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px 28px; background: var(--page); color: var(--ink); min-width: 320px; }
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+    button, select { -webkit-tap-highlight-color: transparent; }
+    :focus-visible { outline: 3px solid #70a7ff99; outline-offset: 3px; }
+    button, select, summary { border-radius: 9px; }
+    [hidden] { display: none !important; }
+    .app { max-width: 1240px; margin: 0 auto; }
+    .icon { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .topbar { min-height: 56px; padding: 8px 14px; background: var(--card); border: 1px solid #ffffff66; border-radius: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; box-shadow: var(--shadow); }
+    .top-left, .brand, .tabs, .actions, .inline, .card-title { display: flex; align-items: center; }
+    .top-left { gap: 23px; }
+    .brand { gap: 9px; padding: 0 9px 0 3px; font-weight: 650; font-size: 13px; letter-spacing: .02em; }
+    .brand-mark { display: grid; place-items: center; width: 30px; height: 30px; color: var(--blue); background: var(--soft); border-radius: 10px; }
+    .brand-mark .icon { width: 23px; height: 23px; }
+    .tabs { gap: 4px; }
+    .tab { padding: 6px 18px; border: 0; background: var(--soft); color: var(--blue-ink); font-weight: 600; border-radius: 9px; }
+    .tab-dot { width: 5px; height: 5px; background: currentColor; display: inline-block; border-radius: 50%; margin: 0 6px 2px 0; }
+    .actions { gap: 7px; }
+    .icon-button { display: inline-flex; justify-content: center; align-items: center; width: 34px; height: 34px; border: 1px solid var(--line); background: var(--card); color: var(--muted); }
+    .icon-button:hover:enabled { color: var(--blue); background: var(--soft); border-color: #9ebfff; }
+    .hero { padding: 33px 10px 23px; display: flex; align-items: center; justify-content: space-between; gap: 22px; }
+    .eyebrow { font-size: 10px; color: var(--muted); letter-spacing: .18em; font-weight: 600; }
+    h1 { margin: 6px 0 5px; font-size: 29px; line-height: 1.4; letter-spacing: -.035em; font-weight: 650; }
+    .hero-description { margin: 0; color: var(--muted); font-size: 13px; }
+    .hero-art { width: 157px; height: 104px; flex-shrink: 0; color: #6f99c4; opacity: .85; }
+    .prompt-details { margin-top: 12px; color: var(--muted); font-size: 12px; }
+    summary { cursor: pointer; width: fit-content; color: var(--ink); padding-right: 6px; }
+    .prompt { margin: 9px 0 0; font-family: inherit; font-size: 12px; line-height: 1.9; max-width: 740px; padding: 12px 16px; color: var(--ink); border: 1px solid #c9def9; border-radius: 9px; background: #ffffff45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .panel { border: 1px solid #ffffff55; background: var(--card); border-radius: 16px; box-shadow: var(--shadow); }
+    .controls { display: grid; grid-template-columns: minmax(180px, 1.05fr) minmax(200px, 1.3fr) minmax(128px, .65fr) auto; align-items: end; gap: 17px; padding: 23px 24px 20px; }
+    .field { min-width: 0; }
+    .field label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+    .field label .icon { width: 13px; height: 13px; }
+    select { width: 100%; min-height: 40px; border: 1px solid #dce7f5; background: var(--card); color: var(--ink); padding: 8px 34px 8px 12px; text-overflow: ellipsis; }
+    select:disabled { color: var(--muted); }
+    .primary-button { display: inline-flex; justify-content: center; align-items: center; gap: 8px; min-width: 142px; min-height: 40px; border: 1px solid var(--blue); background: var(--blue); color: #fff; padding: 8px 18px; box-shadow: 0 3px 9px #3478f620; border-radius: 10px; font-size: 13px; font-weight: 550; }
+    .primary-button:hover:enabled { filter: brightness(1.04); transform: translateY(-1px); }
+    .primary-button.is-running { color: #b34242; background: #fff4f4; border-color: #edcece; box-shadow: none; }
+    .primary-button.is-running .icon { fill: currentColor; stroke: none; width: 13px; height: 13px; }
+    .control-footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; margin-top: 0; }
+    .inline { gap: 6px; }
+    .inline .icon { width: 13px; height: 13px; }
+    .connection-dot { width: 6px; height: 6px; border-radius: 50%; background: #b7c1cf; margin-right: 6px; display: inline-block; }
+    .connection-dot.online { background: var(--green); box-shadow: 0 0 0 3px #149b7410; }
+    .notice { font-size: 12px; margin: 13px 1px 0; padding: 10px 14px; border-radius: 10px; background: #fff8e9; color: #92682d; border: 1px solid #f3e2bd; overflow-wrap: anywhere; }
+    [data-theme="dark"] .notice { background: #392f20; color: #e7c17e; border-color: #65502d; }
+    .schedule { margin-top: 18px; }
+    .schedule-summary { display: flex; align-items: center; gap: 10px; min-height: 55px; padding: 12px 22px; list-style: none; cursor: pointer; }
+    .schedule-summary::-webkit-details-marker { display: none; }
+    .schedule-summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 18px; }
+    details[open] > .schedule-summary::after { transform: rotate(90deg); }
+    .schedule-title { font-size: 14px; font-weight: 700; }
+    .schedule-chip { color: var(--blue-ink); background: var(--soft); padding: 3px 8px; border-radius: 7px; font-size: 11px; }
+    .schedule-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .7fr); gap: 14px; border-top: 1px solid var(--line); padding: 17px 22px; }
+    .schedule-form input[type="text"] { width: 100%; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); font: inherit; }
+    .schedule-help, .schedule-controls { grid-column: 1 / -1; }
+    .schedule-help, .schedule-status { margin: 0; color: var(--muted); font-size: 12px; }
+    .schedule-controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+    .schedule-controls .primary-button { min-height: 36px; }
+    .schedule-status[data-kind="error"] { color: var(--ink); }
+    .history { margin-top: 18px; overflow: hidden; }
+    .history-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px 14px; padding: 16px 22px; border-bottom: 1px solid var(--line); }
+    .history-count { font-size: 11px; color: var(--blue-ink); background: var(--soft); padding: 2px 8px; border-radius: 7px; }
+    .history-hint, .record-secondary { font-size: 11px; color: var(--muted); }
+    .history-empty { margin: 0; text-align: center; padding: 31px 16px; color: var(--muted); font-size: 12px; }
+    .history-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
+    .history-table th { color: var(--muted); font-size: 11px; font-weight: 500; padding: 9px 16px; background: var(--stage); border-bottom: 1px solid var(--line); }
+    .history-table th:nth-child(1) { width: 14%; }
+    .history-table th:nth-child(2) { width: 19%; }
+    .history-table th:nth-child(3) { width: 21%; }
+    .history-table th:nth-child(4) { width: 14%; }
+    .history-table th:nth-child(5) { width: 17%; }
+    .history-table td { padding: 10px 16px; vertical-align: middle; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    .history-table tbody tr:last-child td { border-bottom: 0; }
+    .history-table tbody tr:hover { background: var(--stage); }
+    .history-table :is(th, td):first-child { padding-left: 22px; }
+    .record-primary { font-size: 12px; font-weight: 600; }
+    .record-secondary { display: block; margin-top: 3px; }
+    .record-timing, .record-tokens { font-variant-numeric: tabular-nums; }
+    .record-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+    .thumb { position: relative; display: grid; place-items: center; width: min(100px, 100%); aspect-ratio: 4 / 3; padding: 0; overflow: hidden; border: 1px solid #c9dcf6; border-radius: 8px; color: var(--blue-ink); background: var(--soft); }
+    .thumb:hover { border-color: var(--blue); }
+    .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #eff6fd; }
+    .thumb-marker { position: absolute; right: 3px; bottom: 3px; display: grid; place-items: center; width: 21px; height: 21px; color: #fff; border-radius: 5px; background: #233246bd; }
+    .record-link { padding: 3px 1px; border: 0; background: none; color: var(--blue-ink); font-size: 11px; white-space: nowrap; }
+    .record-link:hover { text-decoration: underline; }
+    .result { margin-top: 20px; overflow: hidden; }
+    .result-header { min-height: 68px; padding: 17px 22px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
+    .card-title { gap: 11px; }
+    h2 { font-size: 14px; font-weight: 600; margin: 0; }
+    .status { display: inline-flex; align-items: center; gap: 5px; border-radius: 5px; background: var(--stage); color: var(--muted); padding: 3px 8px; font-size: 10px; white-space: nowrap; }
+    .status .icon { width: 12px; height: 12px; }
+    .status.success { color: var(--green); background: var(--green-bg); }
+    .status.running { color: var(--blue-ink); background: var(--soft); }
+    .status.error { color: #c05258; background: #fff0f1; }
+    .status.warning { color: var(--warning); background: #fff7e6; }
+    [data-theme="dark"] .status.error { background: #402b35; color: #ffa3ae; }
+    [data-theme="dark"] .status.warning { background: #3a3025; }
+    .result-toolbar { display: flex; align-items: center; gap: 12px; }
+    .view-tabs { background: var(--stage); border: 1px solid var(--line); border-radius: 8px; padding: 3px; display: flex; gap: 3px; }
+    .view-tab { background: transparent; color: var(--muted); border: 0; font-size: 11px; padding: 4px 11px; border-radius: 5px; }
+    .view-tab:is([aria-selected="true"], [aria-pressed="true"]) { background: var(--card); color: var(--ink); box-shadow: 0 1px 4px #2537500d; }
+    .result-tools { display: flex; gap: 6px; }
+    .result-tools .icon-button { width: 29px; height: 29px; border-radius: 7px; }
+    .result-tools .icon { width: 14px; height: 14px; }
+    .stage { min-height: 220px; position: relative; background: var(--stage); }
+    .loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; background: var(--stage); }
+    .spinner { width: 35px; height: 35px; border: 2px solid var(--line); border-top-color: var(--blue); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading h3 { margin: 0 0 5px; font-size: 15px; font-weight: 550; }
+    .loading p { margin: 0; font-size: 12px; color: var(--muted); }
+    .loading-time { font-variant-numeric: tabular-nums; color: var(--blue); font-size: 11px; margin-top: 17px; letter-spacing: .06em; }
+    .dialog-frame > iframe, .dialog-frame > img { display: block; width: 100%; height: 100%; border: 0; object-fit: contain; }
+    .connection-button { border: 1px solid var(--line); color: var(--blue-ink); background: var(--soft); min-height: 34px; padding: 5px 12px; font-size: 11px; }
+    .connection-form { padding: 22px; display: grid; gap: 17px; }
+    .connection-form input { width: 100%; min-height: 40px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font: inherit; }
+    .connection-form p { margin: 0; color: var(--muted); font-size: 11px; }
+    .connection-form .primary-button { justify-self: end; }
+    #connection-dialog { max-width: 490px; }
+    .source-panel { padding: 20px 24px; height: 280px; background: var(--stage); overflow: auto; }
+    .source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; color: var(--ink); font: 12px/1.8 "Cascadia Code", Consolas, monospace; tab-size: 2; }
+    .metrics { display: grid; grid-template-columns: repeat(6, 1fr); border-top: 1px solid var(--line); padding: 18px 9px 20px; }
+    .metric { padding: 0 18px; border-right: 1px solid var(--line); }
+    .metric:last-child { border-right: 0; }
+    .metric-label { font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+    .metric-label .icon { height: 12px; width: 12px; opacity: .75; }
+    .metric-value { margin-top: 5px; font-size: 19px; line-height: 1.5; font-weight: 550; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+    .metric-value small { font-size: 10px; font-weight: 400; color: var(--muted); letter-spacing: 0; margin-left: 3px; }
+    .result-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 24px; background: var(--stage); border-top: 1px solid var(--line); font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+    .result-meta .mono { font-family: "Cascadia Code", Consolas, monospace; }
+    .footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; padding: 17px 6px 4px; }
+    .footer-left { display: flex; align-items: center; gap: 7px; }
+    .footer-left .icon { width: 12px; height: 12px; }
+    .footer-tag { border: 1px solid #cbdcf2; border-radius: 4px; padding: 1px 5px; font-size: 9px; }
+    dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(1200px, 95%); max-width: 95%; color: var(--ink); background: var(--card); }
+    dialog::backdrop { background: #182c496b; backdrop-filter: blur(5px); }
+    .dialog-header { display: flex; flex-wrap: wrap; gap: 9px 14px; justify-content: space-between; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+    .dialog-frame, .dialog-source { width: 100%; height: min(66svh, 740px); }
+    .dialog-frame { background: white; }
+    .dialog-source { padding: 18px; background: var(--stage); overflow: auto; }
+    .dialog-footer { padding: 9px 18px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+    .dialog-copy-status { color: var(--blue-ink); margin-left: 8px; }
+    @media (max-width: 900px) {
+      body { padding: 16px; }
+      .controls { grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr); gap: 14px; padding: 20px; }
+      .primary-button { width: 100%; }
+      .metric { padding: 0 12px; }
+      .metric-value { font-size: 17px; }
+      .result-header { padding: 16px; }
+    }
+    @media (max-width: 600px) {
+      body { padding: 10px; }
+      .topbar { padding: 7px 10px; }
+      .top-left { gap: 9px; }
+      .brand { padding-right: 0; font-size: 12px; }
+      .tab { padding: 6px 12px; }
+      .hero { padding: 27px 7px 20px; }
+      h1 { font-size: 24px; }
+      .hero-art { width: 84px; height: 80px; }
+      .hero-description { max-width: 220px; font-size: 12px; }
+      .controls { padding: 17px; gap: 13px; }
+      .field:first-child { grid-column: 1 / -1; }
+      .run-field { grid-column: 1 / -1; }
+      .control-footer { align-items: flex-start; flex-direction: column; font-size: 10px; }
+      .result-header { align-items: flex-start; flex-direction: column; gap: 12px; }
+      .result-toolbar { width: 100%; justify-content: space-between; }
+      .history-heading { padding: 14px; }
+      .schedule-summary { padding: 10px 14px; }
+      .schedule-form { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px; gap: 12px; }
+      .history-table, .history-table tbody { display: block; }
+      .history-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+      .history-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) 78px; gap: 6px 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+      .history-table tbody tr:last-child { border-bottom: 0; }
+      .history-table td, .history-table td:first-child { padding: 0; border: 0; }
+      .history-table td:nth-child(1) { grid-column: 1; grid-row: 1; }
+      .history-table td:nth-child(2) { grid-column: 1; grid-row: 2; }
+      .history-table td:nth-child(3) { grid-column: 1 / 3; grid-row: 3; }
+      .history-table td:nth-child(4) { grid-column: 2; grid-row: 1; }
+      .history-table td:nth-child(5) { grid-column: 2; grid-row: 2; }
+      .history-table td:nth-child(6) { grid-column: 3; grid-row: 1 / 4; }
+      .thumb { width: 78px; }
+      .record-actions { gap: 2px 6px; }
+      .record-secondary { font-size: 10px; }
+      .dialog-header .result-toolbar { order: 2; }
+      .dialog-header > .icon-button { margin-left: auto; }
+      .dialog-frame, .dialog-source { height: min(58svh, 650px); }
+      .metrics { grid-template-columns: repeat(3, 1fr); row-gap: 20px; padding: 17px 3px; }
+      .metric:nth-child(3) { border-right: 0; }
+      .metric { padding: 0 12px; }
+      .footer { align-items: flex-start; flex-direction: column; gap: 6px; font-size: 9px; padding: 14px 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } .primary-button:hover:enabled { transform: none; } }
+  </style>
+</head>
+<body>
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.4-1L20 9M4 15l2.5 3A7 7 0 0 0 18 17"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m7 7-5 5 5 5m10-10 5 5-5 5M14 4l-4 16"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/></symbol>
+  <symbol id="i-token" viewBox="0 0 24 24"><path d="m12 2 9 5v10l-9 5-9-5V7ZM3 7l9 5 9-5M12 12v10"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="5"/><path d="m12 12 8 8m-3-3 3-3m-6 0 3-3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+  <symbol id="i-bird" viewBox="0 0 24 24"><path d="M7 17c-4-3-3-7 1-7l2-5c1-3 6-2 6 1h6l-6 4c1 3-2 7-6 7H7Zm3 0-1 4m4-4 2 4M5 12l-3-1m8 1c0 2 1 3 3 3"/><circle cx="13" cy="6" r=".5" fill="currentColor"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></symbol>
+</defs></svg>
+<main class="app">
+  <nav class="topbar" aria-label="测试页导航">
+    <div class="top-left">
+      <div class="brand"><span class="brand-mark"><svg class="icon"><use href="#i-bird"/></svg></span>SVG Playground</div>
+      <div class="tabs"><span class="tab" aria-current="page"><span class="tab-dot"></span>鹈鹕</span></div>
+    </div>
+    <div class="actions">
+      <button id="connect" class="connection-button" type="button">连接网关</button>
+      <button id="refresh" class="icon-button" type="button" title="刷新可用模型" aria-label="刷新可用模型"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <div class="eyebrow">THE PELICAN TEST <span style="opacity:.5">/</span> 001</div>
+      <h1>让想象，骑起来。</h1>
+      <p class="hero-description">同一道 SVG 动画题，看看模型的创造力。</p>
+      <details class="prompt-details"><summary>查看固定提示词</summary><pre class="prompt" id="prompt">用svg绘制一个2D鹈鹏骑自行车的动画的html，不要用skill，不用测试</pre></details>
+    </div>
+    <svg class="hero-art" viewBox="0 0 170 110" fill="none" aria-hidden="true">
+      <circle cx="84" cy="54" r="45" fill="#fff" fill-opacity=".4" stroke="#bdd2ed" stroke-dasharray="2 5"/>
+      <path d="M12 91h142M22 96h31m39 0h44" stroke="currentColor" stroke-opacity=".3" stroke-linecap="round"/>
+      <g stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="53" cy="74" r="17"/><circle cx="118" cy="74" r="17"/><path d="m53 74 19-32 17 32H53l32-23h22l11 23m-16-30 5 7M67 42h13M89 74l-2 6h8"/><path d="M69 48c-13-9-10-21 2-24 0-12 7-18 15-14 6 3 4 10 0 15l-1 8c2 9-3 16-16 15Z" fill="#edf5ff"/><path d="M88 16h28L88 26l-5-1m-13 8c-5 5-2 9 7 10l10 12-9 14 13 2M80 34l13 8 10 2"/><circle cx="83" cy="15" r="1" fill="currentColor"/></g>
+      <path d="m137 25 2-5 2 5 5 2-5 2-2 5-2-5-5-2Z" fill="#f2c269"/>
+    </svg>
+  </header>
+
+  <section class="panel controls" aria-label="测试设置">
+    <div class="field"><label for="key"><svg class="icon"><use href="#i-key"/></svg>调用身份 · Client Key</label><select id="key" disabled><option value="">连接后读取可用 Key</option></select></div>
+    <div class="field"><label for="model">模型</label><select id="model" disabled><option value="">连接后读取可用模型</option></select></div>
+    <div class="field"><label for="effort">推理强度</label><select id="effort"><option value="auto">自动</option><option value="none">none</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
+    <div class="run-field"><button id="run" class="primary-button" type="button" disabled><svg class="icon"><use href="#i-play"/></svg><span id="run-label">开始测试</span></button></div>
+    <div class="control-footer"><span class="inline"><svg class="icon"><use href="#i-spark"/></svg>每次只发送 1 个生成请求</span><span id="connection"><span class="connection-dot"></span>等待连接 CPR</span></div>
+  </section>
+  <div class="notice" id="notice" role="status" hidden></div>
+
+  <details class="panel schedule" id="schedule-panel" hidden>
+    <summary class="schedule-summary"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span class="schedule-title">定时测试</span><span id="schedule-state" class="schedule-chip">读取中</span></summary>
+    <form id="schedule-form" class="schedule-form">
+      <div class="field"><label for="schedule-key">Client Key</label><select id="schedule-key" required disabled><option value="">读取中…</option></select></div>
+      <div class="field"><label for="schedule-model">模型</label><select id="schedule-model" required disabled><option value="">请选择 Client Key</option></select></div>
+      <div class="field"><label for="schedule-effort">推理强度</label><select id="schedule-effort"><option value="auto">自动</option><option value="none">none</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
+      <div class="field"><label for="schedule-cron">Cron 规则</label><input id="schedule-cron" type="text" placeholder="0 9 * * 1-5" maxlength="120" aria-describedby="schedule-help" autocomplete="off" required></div>
+      <div class="field"><label for="schedule-timezone">时区</label><input id="schedule-timezone" type="text" list="schedule-timezones" placeholder="Asia/Shanghai" maxlength="80" autocomplete="off" required>
+        <datalist id="schedule-timezones"><option value="Asia/Shanghai"></option><option value="UTC"></option><option value="America/Los_Angeles"></option></datalist>
+      </div>
+      <p id="schedule-help" class="schedule-help">五段顺序：分、时、日、月、星期。示例：0 9 * * 1-5 表示所选时区的工作日 09:00。关闭页面后仍由 CPR 执行，错过的时间不补跑。</p>
+      <div class="schedule-controls">
+        <label><input id="schedule-enabled" type="checkbox"> 启用计划</label>
+        <button id="schedule-save" class="primary-button" type="submit" disabled>保存计划</button>
+        <button id="schedule-pause" class="connection-button" type="button" hidden>暂停计划</button>
+        <p id="schedule-status" class="schedule-status" role="status"></p>
+      </div>
+    </form>
+  </details>
+
+  <section class="panel result" id="current-result" aria-label="本次生成" hidden>
+    <div class="result-header">
+      <div class="card-title"><h2>本次生成</h2><span id="status" class="status running" role="status" aria-live="polite">生成中</span></div>
+      <div class="result-toolbar">
+        <div class="view-tabs" role="tablist" aria-label="生成详情">
+          <button class="view-tab" id="preview-tab" type="button" role="tab" aria-selected="true" aria-controls="preview-panel">生成进度</button>
+          <button class="view-tab" id="source-tab" type="button" role="tab" aria-selected="false" aria-controls="source-panel" tabindex="-1">实时源码</button>
+        </div>
+      </div>
+    </div>
+    <div class="stage" id="preview-panel" role="tabpanel" aria-labelledby="preview-tab">
+      <div class="loading"><div class="spinner" aria-hidden="true"></div><h3 id="loading-title">正在构思这一次骑行</h3><p id="loading-description">完成后，从生成记录中的缩略图回看动画。</p><div class="loading-time" id="loading-time">0.0 s</div></div>
+    </div>
+    <div class="source-panel" id="source-panel" role="tabpanel" aria-labelledby="source-tab" hidden><pre class="source" id="source" tabindex="0">生成的 HTML 源码会显示在这里。</pre></div>
+    <div class="metrics" aria-label="本次请求统计">
+      <div class="metric"><div class="metric-label"><svg class="icon"><use href="#i-clock"/></svg>总耗时</div><div class="metric-value"><span id="duration">—</span><small>s</small></div></div>
+      <div class="metric"><div class="metric-label">首个内容</div><div class="metric-value"><span id="first-token">—</span><small>s</small></div></div>
+      <div class="metric"><div class="metric-label"><svg class="icon"><use href="#i-token"/></svg>输入 tokens</div><div class="metric-value" id="input-tokens">—</div></div>
+      <div class="metric"><div class="metric-label">输出 tokens</div><div class="metric-value" id="output-tokens">—</div></div>
+      <div class="metric"><div class="metric-label">缓存命中</div><div class="metric-value" id="cached-tokens">—</div></div>
+      <div class="metric"><div class="metric-label">推理 tokens</div><div class="metric-value" id="reasoning-tokens">—</div></div>
+    </div>
+    <div class="result-meta" id="result-meta" hidden><span id="result-model" class="mono"></span><span id="result-date"></span><span id="result-id" class="mono"></span></div>
+  </section>
+  <section class="panel history" aria-labelledby="history-title">
+    <div class="history-heading">
+      <div class="card-title"><h2 id="history-title">生成记录</h2><span id="history-count" class="history-count">0 条</span></div>
+      <span id="history-hint" class="history-hint" role="status">点击缩略图看大图</span>
+    </div>
+    <p id="history-empty" class="history-empty">还没有生成记录。点「开始测试」，结果会出现在这里。</p>
+    <table class="history-table" id="history-table" role="table" aria-labelledby="history-title" hidden>
+      <thead role="rowgroup"><tr role="row"><th scope="col">生成时间</th><th scope="col">模型 / 推理强度</th><th scope="col">Key / 上游账号</th><th scope="col">结果</th><th scope="col">Token 用量</th><th scope="col">动画</th></tr></thead>
+      <tbody role="rowgroup" id="history-rows"></tbody>
+    </table>
+  </section>
+  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Codex Path Native Bridge <span class="footer-tag">0.4.0</span></span><span>单次生成 · 点击缩略图放大</span></footer>
+</main>
+<dialog id="preview-dialog" aria-labelledby="dialog-title">
+  <div class="dialog-header">
+    <div><h2 id="dialog-title">鹈鹕动画</h2><span id="dialog-meta" class="record-secondary"></span></div>
+    <div class="result-toolbar">
+      <div class="view-tabs" aria-label="记录视图">
+        <button class="view-tab" id="dialog-preview" type="button" aria-pressed="true">动画</button>
+        <button class="view-tab" id="dialog-source-button" type="button" aria-pressed="false">HTML 源码</button>
+      </div>
+      <div class="result-tools">
+        <button id="copy" class="icon-button" type="button" title="复制 HTML" aria-label="复制 HTML"><svg class="icon"><use href="#i-copy"/></svg></button>
+        <button id="download" class="icon-button" type="button" title="下载 HTML" aria-label="下载 HTML"><svg class="icon"><use href="#i-download"/></svg></button>
+      </div>
+    </div>
+    <button id="close-dialog" class="icon-button" type="button" aria-label="关闭记录"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div id="dialog-frame" class="dialog-frame"></div>
+  <div id="dialog-source-panel" class="dialog-source" hidden><pre id="dialog-source" class="source" tabindex="0"></pre></div>
+  <div class="dialog-footer"><span id="dialog-stats"></span><span id="dialog-copy-status" class="dialog-copy-status" role="status"></span></div>
+</dialog>
+<dialog id="connection-dialog" aria-label="连接网关">
+  <div class="dialog-header"><span>连接你的 CPR 网关</span><button id="close-connection" class="icon-button" type="button" aria-label="关闭连接设置"><svg class="icon"><use href="#i-close"/></svg></button></div>
+  <form id="connection-form" class="connection-form">
+    <div class="field"><label for="gateway-url">网关地址</label><input id="gateway-url" type="url" placeholder="https://your-gateway.example.com" autocomplete="url" required></div>
+    <div class="field"><label for="gateway-key">API 密钥（Client Key）</label><input id="gateway-key" type="password" placeholder="填写用于调用模型的 API 密钥" autocomplete="off" required></div>
+    <p id="connection-help">此入口用于独立测试。填写 API 密钥，不需要管理密钥；安装为 CPR 插件后无需填写这些连接信息。</p>
+    <div id="connection-error" class="notice" role="alert" hidden></div>
+    <button id="save-connection" class="primary-button" type="submit">连接并读取模型</button>
+  </form>
+</dialog>
+<script>
+(() => {
+  'use strict';
+
+  const FIXED_PROMPT = '用svg绘制一个2D鹈鹏骑自行车的动画的html，不要用skill，不用测试';
+  const MAX_TEXT = 512 * 1024;
+  const MAX_FRAME = 2 * 1024 * 1024;
+  const MAX_RECORDS = 20;
+  const HISTORY_KEY = 'cpr-pelican.history.v1';
+  const outcomes = {
+    generated: ['已生成', 'success'], no_svg: ['未返回 SVG', 'warning'],
+    incomplete: ['输出未完成', 'warning'], stopped: ['已停止', 'warning'], failed: ['生成失败', 'error'],
+  };
+  const issues = {
+    interrupted: '宿主中断，未重跑', timeout: '等待模型超时',
+    key_unavailable: 'Key 不可用或无访问权限', model_failed: '模型调用失败', output_limit: '输出超过大小上限',
+  };
+  const $ = id => document.getElementById(id);
+  const bridge = window.codexProxyPlugin;
+  const historyBudget = bridge ? 240 * 1024 : 2 * 1024 * 1024;
+  const encoder = new TextEncoder();
+  const localProxy = document.querySelector('meta[name="pelican-local-proxy"]')?.content === '1'
+    && location.protocol === 'http:' && location.hostname === '127.0.0.1';
+  let direct = null;
+  const number = new Intl.NumberFormat('zh-CN');
+  let epoch = 0;
+  let catalogLoading = false;
+  let controller = null;
+  let state = null;
+  let savedRecords = [];
+  const pageRecords = new Map();
+  let historyTask;
+  let historyMessage = '';
+  let renderedHistory;
+  let oversizedSource = null;
+  let openedRecord = null;
+  let renderFrame = 0;
+  let elapsedTimer = 0;
+  let closed = false;
+  let scheduleKeys = [];
+  let scheduleSnapshot = null;
+  let scheduleRefreshVersion = 0;
+  let scheduleModelsVersion = 0;
+  let scheduleModelLoading = false;
+  let scheduleBusy = false;
+  let scheduleDirty = false;
+  let scheduleMessage = '';
+  let scheduleError = false;
+
+  function notice(message = '') {
+    $('notice').textContent = message;
+    $('notice').hidden = !message;
+  }
+
+  function connectionError(message = '') {
+    $('connection-error').textContent = message;
+    $('connection-error').hidden = !message;
+  }
+
+  function gatewayRequest(path, init = {}, settings = direct) {
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', 'Bearer ' + settings.key);
+    if (localProxy) headers.set('X-Pelican-Gateway', settings.base);
+    return fetch(localProxy ? '/api' + path : settings.base + path,
+      { ...init, headers, credentials: 'omit', redirect: 'error' });
+  }
+
+  function status(label, kind = '') {
+    $('status').textContent = label;
+    $('status').className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function connection(label, online = false) {
+    $('connection').replaceChildren();
+    const dot = document.createElement('span');
+    dot.className = 'connection-dot' + (online ? ' online' : '');
+    $('connection').append(dot, document.createTextNode(label));
+  }
+
+  function controls() {
+    const busy = Boolean(controller);
+    const connected = Boolean(bridge || direct);
+    $('key').disabled = busy || !bridge || $('key').options.length === 0 || !$('key').value;
+    $('model').disabled = busy || catalogLoading || !$('model').value;
+    $('effort').disabled = busy;
+    $('refresh').disabled = busy || catalogLoading || !connected;
+    $('connect').disabled = busy || catalogLoading;
+    $('connect').hidden = Boolean(bridge);
+    $('download').hidden = Boolean(bridge);
+    $('run').disabled = !busy && (!connected || catalogLoading || !$('key').value || !$('model').value);
+    $('run').classList.toggle('is-running', busy);
+    $('run').querySelector('use').setAttribute('href', busy ? '#i-stop' : '#i-play');
+    $('run-label').textContent = busy ? '停止生成' : '开始测试';
+  }
+
+  async function request(method, path, body) {
+    const response = await bridge.request({
+      method, path: path.replace(/^\//, ''),
+      ...(body === undefined ? {} : { contentType: 'application/json', body: JSON.stringify(body) }),
+    });
+    const text = new TextDecoder().decode(response.body);
+    let value;
+    try { value = JSON.parse(text); }
+    catch { throw new Error('插件返回了无法读取的数据，请刷新页面。'); }
+    if (response.status < 200 || response.status >= 300)
+      throw new Error(value.message || `读取失败（HTTP ${response.status}）`);
+    return value;
+  }
+
+  async function loadModels(currentEpoch) {
+    catalogLoading = true;
+    const previous = $('model').value;
+    $('model').replaceChildren(new Option('正在读取模型…', ''));
+    controls();
+    try {
+      const result = await request('POST', '/models', { clientKeyId: $('key').value });
+      if (closed || epoch !== currentEpoch) return;
+      const models = [...new Set((result.models || []).filter(model => typeof model === 'string' && model))];
+      $('model').replaceChildren(...models.map(model => new Option(model, model)));
+      if (models.length) {
+        $('model').value = models.includes(previous) ? previous : models.includes('gpt-6.1-sol') ? 'gpt-6.1-sol' : models[0];
+        connection('已连接 CPR', true);
+        notice();
+      } else {
+        $('model').replaceChildren(new Option('没有可用模型', ''));
+        notice('所选 Client Key 没有可用的模型，请选择其他 Key 或在 CPR 中检查模型范围。');
+      }
+    } catch (error) {
+      if (closed || epoch !== currentEpoch) return;
+      $('model').replaceChildren(new Option('模型读取失败', ''));
+      connection('模型读取失败');
+      notice(error.message);
+    } finally {
+      if (epoch === currentEpoch) { catalogLoading = false; controls(); }
+    }
+  }
+
+  function scheduleControls() {
+    const config = scheduleSnapshot?.settings;
+    $('schedule-state').textContent = scheduleSnapshot === null ? (scheduleError ? '读取失败' : '读取中')
+      : scheduleSnapshot.runningSinceMs ? '执行中' : config?.enabled ? '已启用' : config ? '已暂停' : '未设置';
+    $('schedule-key').disabled = scheduleBusy || !scheduleKeys.length;
+    $('schedule-model').disabled = scheduleBusy || scheduleModelLoading || $('schedule-model').options.length < 2;
+    for (const id of ['schedule-effort', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) $(id).disabled = scheduleBusy;
+    $('schedule-save').disabled = scheduleBusy || scheduleModelLoading
+      || !$('schedule-key').value || !$('schedule-model').value;
+    $('schedule-pause').disabled = scheduleBusy;
+    $('schedule-pause').hidden = !config?.enabled;
+    let next = '';
+    if (Number.isSafeInteger(scheduleSnapshot?.nextRunAtMs) && config?.timezone) {
+      try {
+        const format = new Intl.DateTimeFormat('zh-CN', {
+          dateStyle: 'medium', timeStyle: 'short', timeZone: config.timezone,
+        });
+        next = '下一次：' + format.format(scheduleSnapshot.nextRunAtMs) + ' (' + config.timezone + ')';
+      } catch {}
+    }
+    const status = $('schedule-status');
+    status.dataset.kind = scheduleError ? 'error' : 'info';
+    status.textContent = [scheduleMessage, next].filter(Boolean).join(' · ');
+  }
+
+  function scheduleKeyOptions(preferred) {
+    $('schedule-key').replaceChildren(new Option('请选择 Client Key', ''),
+      ...scheduleKeys.map(key => new Option(key.name || key.id, key.id)));
+    $('schedule-key').value = scheduleKeys.some(key => key.id === preferred) ? preferred : '';
+  }
+
+  async function scheduleModels(preferred) {
+    const keyId = $('schedule-key').value;
+    const version = ++scheduleModelsVersion;
+    scheduleModelLoading = Boolean(keyId);
+    $('schedule-model').replaceChildren(new Option(keyId ? '正在读取模型…' : '请选择 Client Key', ''));
+    scheduleControls();
+    if (!keyId) return;
+    try {
+      const response = await request('POST', '/models', { clientKeyId: keyId });
+      if (closed || version !== scheduleModelsVersion) return;
+      const models = [...new Set((response.models || []).filter(model => typeof model === 'string' && model))];
+      $('schedule-model').replaceChildren(new Option(models.length ? '请选择模型' : '没有可用模型', ''),
+        ...models.map(model => new Option(model, model)));
+      $('schedule-model').value = models.includes(preferred) ? preferred : '';
+      if (preferred && !models.includes(preferred)) {
+        scheduleMessage = '已保存的模型当前不可用，请重新选择。';
+        scheduleError = true;
+      }
+    } catch (error) {
+      if (closed || version !== scheduleModelsVersion) return;
+      $('schedule-model').replaceChildren(new Option('模型读取失败', ''));
+      scheduleMessage = error.message;
+      scheduleError = true;
+    } finally {
+      if (version === scheduleModelsVersion) { scheduleModelLoading = false; scheduleControls(); }
+    }
+  }
+
+  async function refreshSchedule(hydrate = false) {
+    if (!bridge || closed || scheduleBusy) return;
+    const version = ++scheduleRefreshVersion;
+    try {
+      const response = await request('GET', '/schedule');
+      if (closed || version !== scheduleRefreshVersion) return;
+      const populate = (hydrate || scheduleSnapshot === null) && !scheduleDirty;
+      scheduleSnapshot = response;
+      if (populate) {
+        const config = response.settings;
+        scheduleMessage = '';
+        scheduleError = false;
+        scheduleKeyOptions(config?.clientKeyId || $('key').value);
+        $('schedule-effort').value = config?.effort || 'low';
+        $('schedule-cron').value = config?.cron || '';
+        $('schedule-timezone').value = config?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        $('schedule-enabled').checked = Boolean(config?.enabled);
+        if (config && !$('schedule-key').value) {
+          scheduleMessage = '已保存的 Key 当前不可用，请重新选择或暂停计划。';
+          scheduleError = true;
+        }
+        await scheduleModels(config?.model || $('model').value);
+      }
+    } catch (error) {
+      if (closed || version !== scheduleRefreshVersion) return;
+      scheduleMessage = error.message || '无法读取定时计划。';
+      scheduleError = true;
+    }
+    scheduleControls();
+  }
+
+  async function changeSchedule(path, body) {
+    if (!bridge || scheduleBusy) return;
+    scheduleBusy = true;
+    ++scheduleRefreshVersion;
+    scheduleMessage = '';
+    scheduleError = false;
+    scheduleControls();
+    try {
+      const response = await request('POST', path, body);
+      if (closed) return;
+      scheduleSnapshot = response;
+      $('schedule-enabled').checked = Boolean(response.settings?.enabled);
+      if (path === '/schedule') {
+        scheduleDirty = false;
+        $('schedule-cron').value = response.settings.cron;
+        $('schedule-timezone').value = response.settings.timezone;
+        scheduleMessage = '计划已保存。';
+      } else {
+        scheduleMessage = response.runningSinceMs ? '已暂停后续测试，本轮会继续完成。' : '计划已暂停。';
+      }
+    } catch (error) {
+      if (!closed) { scheduleMessage = error.message; scheduleError = true; }
+    } finally {
+      scheduleBusy = false;
+      if (!closed) scheduleControls();
+    }
+  }
+
+  async function initialize() {
+    if (controller) return;
+    if (!bridge && direct) { await loadDirectModels(); return; }
+    if (!bridge || bridge.version !== 2 || typeof bridge.models?.responses !== 'function') {
+      connection('独立页面预览');
+      notice(localProxy ? '本地测试服务已就绪。点击“连接网关”，填写 API 密钥即可读取模型。'
+        : '当前从本地文件打开。建议先运行 node scripts/serve-pelican.mjs，再打开 http://127.0.0.1:3217/，避免网关跨域限制。安装为 CPR 插件后无需此连接步骤。');
+      controls();
+      return;
+    }
+    const currentEpoch = ++epoch;
+    const previous = $('key').value;
+    catalogLoading = true;
+    $('key').replaceChildren(new Option('正在读取 Key…', ''));
+    connection('正在连接 CPR…');
+    controls();
+    try {
+      const result = await request('GET', '/bootstrap');
+      if (closed || epoch !== currentEpoch) return;
+      if (result.prompt !== FIXED_PROMPT) throw new Error('页面与插件的固定提示词不一致，请重新打开当前版本页面。');
+      const keys = (result.keys || []).filter(key => key.enabled && typeof key.id === 'string');
+      scheduleKeys = keys;
+      $('key').replaceChildren(...keys.map(key => new Option(key.name || key.id, key.id)));
+      if (!keys.length) {
+        $('key').replaceChildren(new Option('没有已启用的 Client Key', ''));
+        $('model').replaceChildren(new Option('请先启用一个 Client Key', ''));
+        connection('暂无调用身份');
+        notice('请先在 CPR 中启用一个有模型访问权限的 Client Key，然后刷新此页。');
+        if (!scheduleDirty) scheduleKeyOptions('');
+        void refreshSchedule(true);
+        return;
+      }
+      $('key').value = keys.some(key => key.id === previous) ? previous : keys[0].id;
+      await loadModels(currentEpoch);
+      if (!closed && epoch === currentEpoch) {
+        if (scheduleDirty) scheduleKeyOptions($('schedule-key').value);
+        void refreshSchedule(true);
+      }
+    } catch (error) {
+      if (closed || epoch !== currentEpoch) return;
+      connection('连接失败');
+      notice(error.message);
+    } finally {
+      if (epoch === currentEpoch) { catalogLoading = false; controls(); }
+    }
+  }
+
+  function theme() {
+    document.documentElement.dataset.theme = bridge?.theme === 'dark' ? 'dark' : 'light';
+  }
+
+  function view(name, focus = false) {
+    const source = name === 'source';
+    $('preview-panel').hidden = source;
+    $('source-panel').hidden = !source;
+    for (const id of ['preview', 'source']) {
+      const selected = (id === 'source') === source;
+      $(id + '-tab').setAttribute('aria-selected', String(selected));
+      $(id + '-tab').tabIndex = selected ? 0 : -1;
+    }
+    if (focus) $(name + '-tab').focus();
+  }
+
+  function seconds(milliseconds) {
+    return typeof milliseconds === 'number' && Number.isFinite(milliseconds) ? (milliseconds / 1000).toFixed(1) : '—';
+  }
+
+  function count(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? number.format(value) : '—';
+  }
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function sortRecords(records) {
+    if (!Array.isArray(records)) throw new Error('Invalid history');
+    const valid = records.filter(record => record && typeof record.id === 'string'
+      && (record.trigger === 'scheduled'
+        ? Number.isSafeInteger(record.scheduledAtMs) && record.id === 'scheduled-' + record.scheduledAtMs
+        : (record.trigger === 'manual' || record.trigger === undefined) && /^[a-f\d]{32}$/i.test(record.id))
+      && Number.isSafeInteger(record.startedAtMs) && record.startedAtMs >= 0 && record.startedAtMs <= 8640000000000000
+      && typeof record.model === 'string' && typeof record.effort === 'string' && Object.hasOwn(outcomes, record.outcome)
+      && (record.source === null || (typeof record.source === 'string' && record.source.length <= MAX_TEXT)));
+    return [...new Map(valid.map(record => [record.id, record])).values()]
+      .sort((a, b) => b.startedAtMs - a.startedAtMs || b.id.localeCompare(a.id)).slice(0, MAX_RECORDS);
+  }
+
+  function localHistory() {
+    const raw = window.localStorage.getItem(HISTORY_KEY);
+    return raw ? sortRecords(JSON.parse(raw)) : [];
+  }
+
+  function recordSource(record) {
+    return oversizedSource?.id === record.id ? oversizedSource.text : record.source;
+  }
+
+  function identityLabel(name, id) {
+    return [name, id].find(value => typeof value === 'string' && value.length > 0 && value.length <= 512) || '未知';
+  }
+
+  function renderHistory() {
+    if (closed) return;
+    const records = sortRecords([...savedRecords, ...pageRecords.values()]);
+    $('history-hint').textContent = historyMessage || '点击缩略图看大图 · 最多保留 20 条';
+    $('history-count').textContent = records.length + ' 条';
+    $('history-empty').hidden = records.length > 0;
+    $('history-table').hidden = records.length === 0;
+    const signature = JSON.stringify(records.map(record => [
+      record.id, Boolean(recordSource(record)), record.clientKeyName, record.clientKeyId,
+      record.accountName, record.accountId,
+    ]));
+    if (signature === renderedHistory) return;
+    renderedHistory = signature;
+    $('history-rows').replaceChildren(...records.map(historyRow));
+  }
+
+  function historyRow(record) {
+    const row = element('tr');
+    row.setAttribute('role', 'row');
+    const cells = Array.from({ length: 6 }, () => {
+      const cell = element('td');
+      cell.setAttribute('role', 'cell');
+      row.append(cell);
+      return cell;
+    });
+    const date = new Date(record.startedAtMs);
+    const time = element('time', 'record-primary', date.toLocaleDateString('zh-CN'));
+    time.dateTime = date.toISOString();
+    const trigger = record.trigger === 'scheduled' ? '定时' : '手动';
+    cells[0].append(time, element('span', 'record-secondary', date.toLocaleTimeString('zh-CN') + ' · ' + trigger));
+    cells[1].append(element('span', 'record-primary', record.model),
+      element('span', 'record-secondary', '推理强度 ' + (record.effort === 'auto' ? '自动' : record.effort)));
+    cells[2].append(
+      element('span', 'record-primary', 'Key · ' + identityLabel(record.clientKeyName, record.clientKeyId)),
+      element('span', 'record-secondary', '上游 · ' + identityLabel(record.accountName, record.accountId)),
+    );
+    if (record.clientKeyId) cells[2].children[0].title = record.clientKeyId;
+    if (record.accountId) cells[2].children[1].title = record.accountId;
+    const [label, kind] = outcomes[record.outcome];
+    const duration = seconds(record.durationMs);
+    cells[3].append(element('span', 'status ' + kind, label),
+      element('span', 'record-secondary record-timing', duration === '—' ? '—' : duration + ' s'));
+    if (Object.hasOwn(issues, record.issue)) cells[3].append(element('span', 'record-secondary', issues[record.issue]));
+    cells[4].append(element('div', 'record-primary record-tokens', '入 ' + count(record.inputTokens) + ' / 出 ' + count(record.outputTokens)),
+      element('span', 'record-secondary record-tokens', '缓存 ' + count(record.cachedTokens) + ' · 推理 ' + count(record.reasoningTokens)));
+
+    const source = recordSource(record);
+    if (!source) {
+      cells[5].append(element('span', 'record-secondary', record.sourceOmitted ? '源码超出保存上限' : '—'));
+      return row;
+    }
+    const actions = element('div', 'record-actions');
+    const html = extractDocument(source);
+    if (html) {
+      const button = element('button', 'thumb', '看大图');
+      button.type = 'button';
+      button.setAttribute('aria-label', '查看 ' + record.model + ' 在 ' + date.toLocaleString('zh-CN') + ' 生成的动画大图');
+      const url = svgPreview(html, true);
+      if (url) {
+        const image = element('img');
+        image.alt = '';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.addEventListener('error', () => image.remove(), { once: true });
+        image.src = url;
+        button.append(image);
+      }
+      const marker = element('span', 'thumb-marker', '↗');
+      marker.setAttribute('aria-hidden', 'true');
+      button.append(marker);
+      button.addEventListener('click', () => openRecord(record, true));
+      actions.append(button);
+    }
+    const sourceButton = element('button', 'record-link', '源码');
+    sourceButton.type = 'button';
+    sourceButton.setAttribute('aria-label', '查看 ' + record.model + ' 的 HTML 源码');
+    sourceButton.addEventListener('click', () => openRecord(record, false));
+    actions.append(sourceButton);
+    cells[5].append(actions);
+    return row;
+  }
+
+  async function loadHistory() {
+    try {
+      savedRecords = bridge ? sortRecords((await request('GET', '/history')).records) : localHistory();
+      historyMessage = '';
+    } catch {
+      historyMessage = '无法读取已保存的记录，新结果仍可在本页查看。';
+    }
+    renderHistory();
+  }
+
+  function rememberRun(outcome) {
+    const numeric = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const model = (state.actualModel || state.model).replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, 120).trim();
+    const record = {
+      id: Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join(''),
+      startedAtMs: state.date.getTime(),
+      model: model || state.model, effort: state.effort, outcome, trigger: 'manual',
+      ...(state.keyName ? { clientKeyName: state.keyName } : {}),
+      ...(bridge ? { clientKeyId: state.keyId, gatewayRequestId: state.gatewayRequestId || null } : {}),
+      durationMs: Math.round(state.duration), firstContentMs: state.firstContent === null ? null : Math.round(state.firstContent),
+      inputTokens: numeric(state.usage?.input_tokens), outputTokens: numeric(state.usage?.output_tokens),
+      cachedTokens: numeric(state.usage?.input_tokens_details?.cached_tokens),
+      reasoningTokens: numeric(state.usage?.output_tokens_details?.reasoning_tokens),
+      source: state.text || state.refusal || null, sourceOmitted: false,
+    };
+    oversizedSource = null;
+    if (encoder.encode(JSON.stringify(record)).length > historyBudget - 1024) {
+      oversizedSource = { id: record.id, text: record.source };
+      record.source = null;
+      record.sourceOmitted = true;
+    }
+    pageRecords.set(record.id, record);
+    if (pageRecords.size > MAX_RECORDS) pageRecords.delete(pageRecords.keys().next().value);
+    historyMessage = '正在保存生成记录…';
+    renderHistory();
+
+    historyTask = historyTask.then(async () => {
+      try {
+        if (bridge) {
+          savedRecords = sortRecords((await request('POST', '/history', record)).records);
+        } else {
+          const records = sortRecords([...localHistory(), record]);
+          let serialized = JSON.stringify(records);
+          while (encoder.encode(serialized).length > historyBudget) {
+            records.pop();
+            serialized = JSON.stringify(records);
+          }
+          window.localStorage.setItem(HISTORY_KEY, serialized);
+          savedRecords = records;
+        }
+        pageRecords.delete(record.id);
+        historyMessage = pageRecords.size ? '部分记录未保存，仍可在本页查看。' : '';
+      } catch {
+        historyMessage = '保存失败，当前记录仍可在本页查看。';
+      }
+      renderHistory();
+    });
+  }
+
+  function metrics() {
+    $('duration').textContent = state ? seconds(state.duration ?? performance.now() - state.started) : '—';
+    $('first-token').textContent = seconds(state?.firstContent);
+    $('input-tokens').textContent = count(state?.usage?.input_tokens);
+    $('output-tokens').textContent = count(state?.usage?.output_tokens);
+    $('cached-tokens').textContent = count(state?.usage?.input_tokens_details?.cached_tokens);
+    $('reasoning-tokens').textContent = count(state?.usage?.output_tokens_details?.reasoning_tokens);
+    if (controller && state) $('loading-time').textContent = seconds(performance.now() - state.started) + ' s';
+  }
+
+  function firstContent() {
+    if (state.firstContent === null) state.firstContent = performance.now() - state.started;
+  }
+
+  function refreshSource() {
+    if (renderFrame) return;
+    renderFrame = requestAnimationFrame(() => {
+      renderFrame = 0;
+      if (!state) return;
+      const pane = $('source-panel');
+      const follow = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 70;
+      $('source').textContent = state.text || '等待模型返回 HTML…';
+      if (follow) pane.scrollTop = pane.scrollHeight;
+      metrics();
+    });
+  }
+
+  function assembleParts() {
+    const parts = [...state.parts.values()].sort((a, b) => a.output - b.output || a.content - b.content);
+    const text = parts.map(part => part.text).join('\n');
+    if (text.length > MAX_TEXT) throw new Error('生成的 HTML 超过页面大小限制，请停止后重新选择模型。');
+    state.text = text;
+    refreshSource();
+  }
+
+  function responseText(response) {
+    if (typeof response.output_text === 'string') return response.output_text;
+    return (response.output || []).filter(item => item.type === 'message')
+      .flatMap(item => item.content || [])
+      .filter(part => part.type === 'output_text' && typeof part.text === 'string')
+      .map(part => part.text).join('\n');
+  }
+
+  function responseFacts(response) {
+    if (!response || typeof response !== 'object') return;
+    if (typeof response.model === 'string') state.actualModel = response.model;
+    if (typeof response.id === 'string') state.responseId = response.id;
+    if (response.usage && typeof response.usage === 'object') state.usage = response.usage;
+    const text = responseText(response);
+    if (text) {
+      if (text.length > MAX_TEXT) throw new Error('生成的 HTML 超过页面大小限制。');
+      firstContent();
+      state.text = text;
+      refreshSource();
+    }
+  }
+
+  function eventError(error) {
+    const message = typeof error?.message === 'string' ? error.message.slice(0, 400) : '模型请求失败，请查看 CPR 请求记录。';
+    return new Error(message);
+  }
+
+  function consumeEvent(data, eventName) {
+    if (!data || typeof data !== 'object') return;
+    const type = data.type || eventName;
+    if (type === 'error' || type === 'response.failed') throw eventError(data.error || data.response?.error || data);
+    if (type === 'response.created' || type === 'response.in_progress') responseFacts(data.response);
+    if (type === 'response.output_text.delta' || type === 'response.output_text.done') {
+      firstContent();
+      const output = Number.isInteger(data.output_index) ? data.output_index : 0;
+      const content = Number.isInteger(data.content_index) ? data.content_index : 0;
+      const key = output + ':' + content;
+      const part = state.parts.get(key) || { output, content, text: '' };
+      if (type.endsWith('.delta') && typeof data.delta === 'string') part.text += data.delta;
+      else if (typeof data.text === 'string') part.text = data.text;
+      state.parts.set(key, part);
+      $('loading-title').textContent = '正在绘制鹈鹕的骑行世界';
+      $('loading-description').textContent = 'HTML 正在生成，可以切换到源码视图查看。';
+      assembleParts();
+    }
+    if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') firstContent();
+    if (type === 'response.refusal.delta') {
+      firstContent();
+      state.refusal += typeof data.delta === 'string' ? data.delta : '';
+      if (state.refusal.length > MAX_TEXT) throw new Error('模型返回内容超过页面大小限制。');
+    }
+    if (type === 'response.completed' || type === 'response.incomplete') {
+      responseFacts(data.response);
+      state.terminal = type === 'response.completed' ? 'completed' : 'incomplete';
+      if (state.terminal === 'incomplete') state.incompleteReason = data.response?.incomplete_details?.reason || '';
+    }
+  }
+
+  function parseFrame(frame) {
+    let eventName = '';
+    const data = [];
+    for (const line of frame.split(/\r\n|\n|\r/)) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+    }
+    if (!data.length) return;
+    const value = data.join('\n');
+    if (value.trim() === '[DONE]') return;
+    let parsed;
+    try { parsed = JSON.parse(value); }
+    catch { throw new Error('模型返回了无法解析的流事件。'); }
+    consumeEvent(parsed, eventName);
+  }
+
+  async function readResponse(response, signal) {
+    if (!response.body) throw new Error('模型没有返回响应正文。');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const sse = (response.headers.get('content-type') || '').includes('text/event-stream');
+    let buffer = '';
+    let finished = false;
+    try {
+      while (true) {
+        if (signal.aborted) throw new DOMException('Stopped', 'AbortError');
+        const { value, done } = await reader.read();
+        if (done) { finished = true; buffer += decoder.decode(); break; }
+        buffer += decoder.decode(value, { stream: true });
+        if (sse) {
+          let delimiter;
+          while ((delimiter = /\r\n\r\n|\n\n|\r\r/.exec(buffer))) {
+            const frame = buffer.slice(0, delimiter.index);
+            if (frame.length > MAX_FRAME) throw new Error('单个流事件超过页面大小限制。');
+            buffer = buffer.slice(delimiter.index + delimiter[0].length);
+            parseFrame(frame);
+          }
+        }
+        if (buffer.length > MAX_FRAME) throw new Error('模型响应超过页面大小限制。');
+      }
+      if (sse) {
+        if (buffer.trim()) parseFrame(buffer);
+      } else {
+        let data;
+        try { data = JSON.parse(buffer); }
+        catch { throw new Error('模型返回的不是有效 Responses JSON。'); }
+        if (data.error || data.status === 'failed') throw eventError(data.error);
+        responseFacts(data);
+        state.terminal = data.status === 'completed' ? 'completed' : 'incomplete';
+      }
+    } finally {
+      if (!finished) { try { await reader.cancel(); } catch {} }
+      reader.releaseLock();
+    }
+  }
+
+  function extractDocument(text) {
+    let source = text.trim();
+    const fences = [...source.matchAll(/```(?:html?|svg)?[^\S\r\n]*\r?\n([\s\S]*?)```/gi)];
+    const fenced = fences.find(match => /<svg\b/i.test(match[1]));
+    if (fenced) source = fenced[1].trim();
+    const start = source.search(/<!doctype\s+html\b|<html\b|<svg\b/i);
+    if (start < 0 || !/<svg\b/i.test(source) || !/<\/svg\s*>/i.test(source)) return '';
+    source = source.slice(start);
+    if (/^<svg\b/i.test(source)) {
+      const end = source.toLowerCase().lastIndexOf('</svg>');
+      return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;display:grid;place-items:center;min-height:100svh">' + source.slice(0, end + 6) + '</body></html>';
+    }
+    const end = source.toLowerCase().lastIndexOf('</html>');
+    return end >= 0 ? source.slice(0, end + 7) : source;
+  }
+
+  function sandboxDocument(html) {
+    // The first CSP applies to the entire document, including all generated markup.
+    const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; media-src data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'";
+    return '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="' + policy + '"><meta charset="utf-8"><meta name="referrer" content="no-referrer"></head><body>' + html + '</body></html>';
+  }
+
+  function svgPreview(html, thumbnail = false) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const original = template.content.querySelector('svg');
+    if (!original) return '';
+    const svg = original.cloneNode(true);
+    svg.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns', 'http://www.w3.org/2000/svg');
+    if (!svg.hasAttribute('viewBox')) {
+      const width = parseFloat(svg.getAttribute('width')) || 800;
+      const height = parseFloat(svg.getAttribute('height')) || 600;
+      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    }
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    svg.querySelectorAll('script, foreignObject, iframe, object, embed, a').forEach(node => node.remove());
+    if (thumbnail) svg.querySelectorAll('animate, animateMotion, animateTransform, set').forEach(node => node.remove());
+    for (const element of [svg, ...svg.querySelectorAll('*')]) {
+      for (const attribute of [...element.attributes]) {
+        if (/^on/i.test(attribute.name) || ((attribute.name === 'href' || attribute.name === 'xlink:href') && !attribute.value.startsWith('#') && !attribute.value.startsWith('data:image/')))
+          element.removeAttribute(attribute.name);
+      }
+    }
+    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    style.textContent = [...template.content.querySelectorAll('style')].filter(node => !original.contains(node)).map(node => node.textContent).join('\n');
+    svg.prepend(style);
+    if (thumbnail) {
+      const still = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+      still.textContent = ':root, * { animation: none !important; transition: none !important; }';
+      svg.append(still);
+    }
+    try {
+      const source = new XMLSerializer().serializeToString(svg).toWellFormed();
+      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(source);
+    } catch {
+      return '';
+    }
+  }
+
+  function mountPreview(container, html) {
+    container.replaceChildren();
+    if (bridge) {
+      // CPR forbids child frames. An image document runs SVG CSS/SMIL without exposing the bridge.
+      const url = svgPreview(html);
+      if (!url) {
+        container.append(element('p', 'history-empty', '这条记录没有可预览的 SVG，可切换到 HTML 源码。'));
+        return;
+      }
+      const image = document.createElement('img');
+      image.alt = '模型生成的鹈鹕 SVG 动画';
+      image.addEventListener('error', () => {
+        container.replaceChildren(element('p', 'history-empty', 'SVG 预览无法显示，请查看原始源码。'));
+      }, { once: true });
+      image.src = url;
+      container.append(image);
+    } else {
+      const frame = document.createElement('iframe');
+      frame.title = '模型生成的鹈鹕骑行 HTML 动画';
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.referrerPolicy = 'no-referrer';
+      frame.srcdoc = sandboxDocument(html);
+      container.append(frame);
+    }
+  }
+
+  function openRecord(record, preferAnimation) {
+    const source = recordSource(record);
+    if (!source) return;
+    const html = extractDocument(source);
+    openedRecord = { source, html, startedAtMs: record.startedAtMs };
+    $('dialog-meta').textContent = [record.model, record.effort, new Date(record.startedAtMs).toLocaleString('zh-CN'),
+      record.trigger === 'scheduled' ? '定时' : '手动',
+      'Key ' + identityLabel(record.clientKeyName, record.clientKeyId),
+      '上游 ' + identityLabel(record.accountName, record.accountId)].join(' · ');
+    $('dialog-stats').textContent = [
+      outcomes[record.outcome][0], '耗时 ' + seconds(record.durationMs) + ' s', '首个内容 ' + seconds(record.firstContentMs) + ' s',
+      '输入 ' + count(record.inputTokens), '输出 ' + count(record.outputTokens),
+      '缓存 ' + count(record.cachedTokens), '推理 ' + count(record.reasoningTokens),
+    ].join(' · ');
+    $('dialog-copy-status').textContent = '';
+    $('dialog-source').textContent = source;
+    $('dialog-preview').disabled = !html;
+    $('download').disabled = !html;
+    recordView(preferAnimation);
+    $('preview-dialog').showModal();
+  }
+
+  function recordView(preferAnimation) {
+    if (!openedRecord) return;
+    const animation = Boolean(preferAnimation && openedRecord.html);
+    $('dialog-title').textContent = animation ? '鹈鹕动画大图' : '生成记录 · HTML 源码';
+    $('dialog-preview').setAttribute('aria-pressed', String(animation));
+    $('dialog-source-button').setAttribute('aria-pressed', String(!animation));
+    $('dialog-source-panel').hidden = animation;
+    $('dialog-frame').hidden = !animation;
+    if (animation) mountPreview($('dialog-frame'), openedRecord.html);
+    else $('dialog-frame').replaceChildren();
+  }
+
+  function meta() {
+    $('result-meta').hidden = !state;
+    if (!state) return;
+    $('result-model').textContent = (state.actualModel || state.model) + ' · ' + state.effort;
+    $('result-date').textContent = state.date.toLocaleString('zh-CN');
+    $('result-id').textContent = state.requestId ? 'request: ' + state.requestId : state.responseId ? 'response: ' + state.responseId : '';
+  }
+
+  async function run() {
+    if (controller) { controller.abort(); return; }
+    if ((!bridge && !direct) || !$('key').value || !$('model').value || catalogLoading) return;
+    controller = new AbortController();
+    const signal = controller.signal;
+    const keyId = $('key').value;
+    state = {
+      model: $('model').value, effort: $('effort').value, actualModel: '', text: '',
+      parts: new Map(), refusal: '', usage: {}, terminal: null,
+      firstContent: null, started: performance.now(), duration: null,
+      date: new Date(), requestId: '', responseId: '', gatewayRequestId: '',
+      keyId, keyName: bridge ? [...$('key').options].find(option => option.value === keyId)?.textContent : direct?.keyName,
+    };
+    $('current-result').hidden = false;
+    $('loading-title').textContent = '正在构思这一次骑行';
+    $('loading-description').textContent = '完成后，从生成记录中的缩略图回看动画。';
+    $('source').textContent = '等待模型返回 HTML…';
+    view('preview');
+    notice();
+    status('生成中', 'running');
+    controls();
+    metrics();
+    meta();
+    elapsedTimer = setInterval(metrics, 200);
+    let outcome = 'failed';
+    try {
+      const body = {
+        model: state.model, stream: true, store: false, tools: [],
+        input: [{ role: 'user', content: [{ type: 'input_text', text: FIXED_PROMPT }] }],
+      };
+      if (state.effort !== 'auto') body.reasoning = { effort: state.effort };
+      // Exactly one model request; account selection and accounting stay with CPR.
+      const response = bridge
+        ? await bridge.models.responses({ clientKeyId: keyId, body, signal })
+        : await gatewayRequest('/responses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
+      state.gatewayRequestId = bridge ? response.headers.get('x-gateway-request-id') || '' : '';
+      state.requestId = state.gatewayRequestId || response.headers.get('x-request-id') || response.headers.get('openai-request-id') || '';
+      if (!response.ok) {
+        let error;
+        try { error = await response.json(); } catch {}
+        throw eventError(error?.error || { message: `请求失败（HTTP ${response.status}），请检查模型与 Key 权限。` });
+      }
+      await readResponse(response, signal);
+      if (signal.aborted) throw new DOMException('Stopped', 'AbortError');
+      if (!state.text && state.refusal) throw new Error('模型拒绝生成本次内容。');
+      const available = Boolean(extractDocument(state.text));
+      if (state.terminal !== 'completed') {
+        outcome = 'incomplete';
+        notice('本次响应没有完整结束。可以从生成记录查看已收到的内容。');
+      } else if (!available) {
+        outcome = 'no_svg';
+        notice('模型已结束响应，但没有返回可预览的 SVG。可从生成记录查看源码。');
+      } else {
+        outcome = 'generated';
+      }
+    } catch (error) {
+      if (!closed) {
+        const stopped = signal.aborted || error.name === 'AbortError';
+        outcome = stopped ? 'stopped' : 'failed';
+        notice(stopped ? '已停止本次请求，可从生成记录查看收到的内容。' : error.message || '生成失败，请手动重试。');
+      }
+    } finally {
+      clearInterval(elapsedTimer);
+      cancelAnimationFrame(renderFrame);
+      renderFrame = 0;
+      state.duration = performance.now() - state.started;
+      controller = null;
+      const moveFocus = document.activeElement && $('current-result').contains(document.activeElement);
+      $('current-result').hidden = true;
+      if (!closed) {
+        status(...outcomes[outcome]);
+        $('source').textContent = state.text || state.refusal || '本次请求没有返回 HTML 文本。';
+        metrics();
+        meta();
+        controls();
+        rememberRun(outcome);
+        if (moveFocus) $('run').focus();
+      }
+    }
+  }
+
+  async function copy() {
+    if (!openedRecord) return;
+    const record = openedRecord;
+    const text = record.html || record.source;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (openedRecord === record) $('dialog-copy-status').textContent = 'HTML 已复制';
+    } catch {
+      if (openedRecord !== record) return;
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      $('preview-dialog').append(area);
+      area.select();
+      let copied = false;
+      try { copied = document.execCommand('copy'); } catch {}
+      area.remove();
+      $('copy').focus();
+      if (!copied) recordView(false);
+      $('dialog-copy-status').textContent = copied ? 'HTML 已复制' : '请选中源码后复制';
+    }
+  }
+
+  function download() {
+    if (bridge || !openedRecord?.html) return;
+    const url = URL.createObjectURL(new Blob([openedRecord.html], { type: 'text/html;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'pelican-' + openedRecord.startedAtMs + '.html';
+    $('preview-dialog').append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function localKeyLabel({ base, key }) {
+    try {
+      const bytes = await crypto.subtle.digest('SHA-256', encoder.encode('cpr-pelican\0' + base + '\0' + key));
+      return '#' + Array.from(new Uint8Array(bytes, 0, 6), byte => byte.toString(16).padStart(2, '0')).join('');
+    } catch { return '独立页 Key'; }
+  }
+
+  async function loadDirectModels(candidate = direct) {
+    catalogLoading = true;
+    connectionError();
+    connection('正在连接网关…');
+    controls();
+    const previous = $('model').value;
+    try {
+      const response = await gatewayRequest('/models', { signal: AbortSignal.timeout(30000) }, candidate);
+      if (response.status === 401) throw new Error('API 密钥验证失败（HTTP 401）。请填写有效的 Client Key，不是管理密钥。');
+      if (response.status === 403) throw new Error('访问被拒绝（HTTP 403）。请检查 API 密钥是否启用，以及分组和模型权限。');
+      if (response.status === 404) throw new Error('未找到模型接口（HTTP 404）。请检查网关地址和 /v1 路径。');
+      if (!response.ok) throw new Error(`网关模型接口返回 HTTP ${response.status}，请检查网关服务和网络。`);
+      const value = await response.json();
+      if (!Array.isArray(value.data)) throw new Error('网关返回的不是有效模型列表，请检查是否填写了 API 网关地址。');
+      const models = [...new Set(value.data.map(item => item.id).filter(id => typeof id === 'string' && id))];
+      if (!models.length) throw new Error('该 Key 没有可用模型。');
+      direct = candidate;
+      if (!direct.keyName) direct.keyName = await localKeyLabel(candidate);
+      $('model').replaceChildren(...models.map(model => new Option(model, model)));
+      $('model').value = models.includes(previous) ? previous : models.includes('gpt-6.1-sol') ? 'gpt-6.1-sol' : models[0];
+      $('key').replaceChildren(new Option('当前网关连接', 'direct'));
+      connection('已连接 ' + new URL(direct.base).host, true);
+      notice();
+      return true;
+    } catch (error) {
+      if (!direct) $('model').replaceChildren(new Option('模型读取失败', ''));
+      connection('网关连接失败');
+      const message = error.name === 'TimeoutError' ? '读取模型超时，请检查网关地址和网络。'
+        : error instanceof TypeError ? localProxy ? '本地服务连接失败，请检查本地服务是否仍在运行。'
+          : '浏览器跨域请求被拦截或网关不可达。请使用本地服务 http://127.0.0.1:3217/，或在 CPR 中打开已安装的插件页面。'
+        : error.message || '连接失败，请检查地址和 API 密钥。';
+      connectionError(message);
+      notice(message);
+      return false;
+    } finally {
+      catalogLoading = false;
+      controls();
+    }
+  }
+
+  async function saveConnection(event) {
+    event.preventDefault();
+    if (bridge || controller || catalogLoading) return;
+    connectionError();
+    let url;
+    try {
+      url = new URL($('gateway-url').value.trim());
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash)
+        throw new Error();
+    } catch { connectionError('请输入不带查询参数或登录信息的 HTTP(S) 网关地址。'); return; }
+    const key = $('gateway-key').value.trim();
+    if (!key) return;
+    const base = url.href.replace(/\/+$/, '');
+    const candidate = { base: /\/v1$/i.test(base) ? base : base + '/v1', key };
+    $('save-connection').disabled = true;
+    $('save-connection').textContent = '正在连接…';
+    try {
+      if (await loadDirectModels(candidate)) {
+        $('connection-dialog').close();
+        $('gateway-key').value = '';
+        $('connect').textContent = '连接设置';
+      }
+    } finally {
+      $('save-connection').disabled = false;
+      $('save-connection').textContent = '连接并读取模型';
+    }
+  }
+
+  $('run').addEventListener('click', run);
+  $('refresh').addEventListener('click', async () => {
+    historyTask = historyTask.then(loadHistory);
+    await initialize();
+  });
+  $('connect').addEventListener('click', () => $('connection-dialog').showModal());
+  $('close-connection').addEventListener('click', () => $('connection-dialog').close());
+  $('connection-form').addEventListener('submit', saveConnection);
+  $('key').addEventListener('change', () => { notice(); loadModels(++epoch); });
+  $('model').addEventListener('change', controls);
+  if (bridge) {
+    $('schedule-panel').hidden = false;
+    $('schedule-key').addEventListener('change', () => {
+      scheduleDirty = true;
+      scheduleError = false;
+      scheduleMessage = '';
+      return scheduleModels('');
+    });
+    for (const id of ['schedule-model', 'schedule-effort', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) {
+      $(id).addEventListener('input', () => { scheduleDirty = true; scheduleControls(); });
+    }
+    $('schedule-form').addEventListener('submit', event => {
+      event.preventDefault();
+      if ($('schedule-save').disabled) return;
+      return changeSchedule('/schedule', {
+        clientKeyId: $('schedule-key').value, model: $('schedule-model').value,
+        effort: $('schedule-effort').value, cron: $('schedule-cron').value.trim(),
+        timezone: $('schedule-timezone').value.trim(), enabled: $('schedule-enabled').checked,
+      });
+    });
+    $('schedule-pause').addEventListener('click', () => changeSchedule('/schedule/pause', {}));
+  }
+  $('copy').addEventListener('click', copy);
+  $('download').addEventListener('click', download);
+  $('preview-tab').addEventListener('click', () => view('preview'));
+  $('source-tab').addEventListener('click', () => view('source'));
+  for (const id of ['preview-tab', 'source-tab']) {
+    $(id).addEventListener('keydown', event => {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        const target = event.key === 'Home' ? 'preview' : event.key === 'End' ? 'source' : id === 'preview-tab' ? 'source' : 'preview';
+        view(target, true);
+      }
+    });
+  }
+  $('dialog-preview').addEventListener('click', () => recordView(true));
+  $('dialog-source-button').addEventListener('click', () => recordView(false));
+  $('close-dialog').addEventListener('click', () => $('preview-dialog').close());
+  $('preview-dialog').addEventListener('close', () => {
+    openedRecord = null;
+    $('dialog-frame').replaceChildren();
+    $('dialog-source').textContent = '';
+  });
+  window.addEventListener('codex-proxy-themechange', theme);
+  const poll = bridge ? setInterval(() => {
+    if (closed || document.hidden) return;
+    historyTask = historyTask.then(loadHistory);
+    void refreshSchedule();
+  }, 30000) : 0;
+  window.addEventListener('pagehide', () => {
+    closed = true;
+    controller?.abort();
+    clearInterval(elapsedTimer);
+    clearInterval(poll);
+    cancelAnimationFrame(renderFrame);
+  }, { once: true });
+  theme();
+  historyTask = loadHistory();
+  initialize();
+})();
+</script>
+</body>
+</html>

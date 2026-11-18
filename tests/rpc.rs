@@ -7,9 +7,12 @@
 use std::{process::Stdio, time::Duration};
 
 use gateway_plugin_sdk::{
-    CallContext, Capability, Contributions, Frame, FrameError, Handshake, Manifest, Message,
-    PROTOCOL_VERSION, Stage,
-    call::middleware::{MiddlewareHeader, http as wire},
+    CallContext, Capability, Contributions, ErrorCode, Frame, FrameError, Handshake, Manifest,
+    Message, PROTOCOL_VERSION, PluginFault, Stage,
+    call::{
+        management::ManagementResponse,
+        middleware::{MiddlewareHeader, http as wire},
+    },
     client::{read_frame, write_frame},
 };
 use serde_json::{Value, json};
@@ -17,6 +20,9 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+
+#[path = "rpc/pelican.rs"]
+mod pelican;
 
 const BIN: &str = env!("CARGO_BIN_EXE_cpr-omp-native-bridge");
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -389,24 +395,28 @@ fn call_frame(id: u64, request: wire::Request) -> Frame {
         message: Message::Call {
             id,
             method: "middleware.handle".into(),
-            context: CallContext {
-                request: None,
-                call_id: id,
-                instance_id: INSTANCE.into(),
-                generation: 1,
-                incarnation: INCARNATION.into(),
-                stage: Stage::Http,
-                timeout_ms: 5_000,
-                resource_stream: false,
-                resource_scope_id: format!("scope-{id}"),
-                request_id: Some(request_id),
-                attempt_id: None,
-                account_id: None,
-                credential_revision: None,
-            },
+            context: call_context(id, Stage::Http),
             params: serde_json::to_value(call).expect("call params"),
         },
         payload: Vec::new(),
+    }
+}
+
+fn call_context(id: u64, stage: Stage) -> CallContext {
+    CallContext {
+        request: None,
+        call_id: id,
+        instance_id: INSTANCE.into(),
+        generation: 1,
+        incarnation: INCARNATION.into(),
+        stage,
+        timeout_ms: 5_000,
+        resource_stream: false,
+        resource_scope_id: format!("scope-{id}"),
+        request_id: Some(format!("req-{id}")),
+        attempt_id: None,
+        account_id: None,
+        credential_revision: None,
     }
 }
 
@@ -581,6 +591,191 @@ async fn actual_process_handshake_and_path_next_preservation() {
         assert!(!returned.session, "{}: response session", case.name);
     }
 
+    host.shutdown().await;
+}
+
+async fn history_call(
+    host: &mut Host,
+    input: Option<&Value>,
+    callback: &mut impl FnMut(&str, Value) -> Result<Value, PluginFault>,
+) -> (u16, Value) {
+    management_call(host, "/history", input, &mut |method, params, payload| {
+        assert!(payload.is_empty());
+        callback(method, params).map(|result| (result, Vec::new()))
+    })
+    .await
+}
+
+async fn management_call(
+    host: &mut Host,
+    path: &str,
+    input: Option<&Value>,
+    callback: &mut impl FnMut(&str, Value, &[u8]) -> Result<(Value, Vec<u8>), PluginFault>,
+) -> (u16, Value) {
+    let (result, payload) = rpc_call(
+        host,
+        "management.handle",
+        Stage::Management,
+        json!({
+            "method": if input.is_some() { "POST" } else { "GET" },
+            "path": path.trim_start_matches('/'),
+            "query": "",
+            "content_type": input.map(|_| "application/json"),
+        }),
+        input
+            .map(|value| serde_json::to_vec(value).unwrap())
+            .unwrap_or_default(),
+        callback,
+    )
+    .await;
+    let metadata: ManagementResponse = serde_json::from_value(result).unwrap();
+    (metadata.status, serde_json::from_slice(&payload).unwrap())
+}
+
+async fn rpc_call(
+    host: &mut Host,
+    method: &str,
+    stage: Stage,
+    params: Value,
+    payload: Vec<u8>,
+    callback: &mut impl FnMut(&str, Value, &[u8]) -> Result<(Value, Vec<u8>), PluginFault>,
+) -> (Value, Vec<u8>) {
+    let id = host.next_call_id;
+    host.next_call_id += 2;
+    let mut context = call_context(id, stage);
+    if stage == Stage::Maintenance {
+        context.request_id = None;
+    }
+    host.send(Frame {
+        message: Message::Call {
+            id,
+            method: method.into(),
+            context,
+            params,
+        },
+        payload,
+    })
+    .await;
+    loop {
+        let frame = host.read().await;
+        match frame.message {
+            Message::Callback {
+                id: callback_id,
+                parent_id,
+                method,
+                params,
+            } => {
+                assert_eq!(parent_id, id);
+                let reply = match callback(&method, params, &frame.payload) {
+                    Ok((result, payload)) => Frame {
+                        message: Message::Result {
+                            id: callback_id,
+                            result,
+                        },
+                        payload,
+                    },
+                    Err(error) => Frame::control(Message::Error {
+                        id: callback_id,
+                        error,
+                    }),
+                };
+                host.send(reply).await;
+            }
+            Message::Suspend { .. } | Message::CallbackConsumed { .. } => {}
+            Message::Resume {
+                id: resume_id,
+                epoch,
+            } => {
+                assert_eq!(resume_id, id);
+                host.send(Frame::control(Message::Resumed { id, epoch }))
+                    .await;
+            }
+            Message::Result {
+                id: result_id,
+                result,
+            } if result_id == id => {
+                return (result, frame.payload);
+            }
+            other => panic!("unexpected {method} frame {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn management_history_survives_another_write_without_losing_either_record() {
+    let mut host = start().await;
+    let record = |id: &str, start: u64, source: &str| {
+        json!({
+            "id": id, "startedAtMs": start, "model": "fixture-model", "effort": "low",
+            "outcome": "generated", "trigger": "manual", "durationMs": 100, "firstContentMs": 20,
+            "inputTokens": 10, "outputTokens": 12, "cachedTokens": null, "reasoningTokens": null,
+            "source": source, "sourceOmitted": false,
+        })
+    };
+    let older = record(
+        "10000000000000000000000000000000",
+        1_700_000_000_000,
+        "<svg><!-- older --></svg>",
+    );
+    let newer = record(
+        "20000000000000000000000000000000",
+        1_700_000_001_000,
+        "<svg><!-- newer --></svg>",
+    );
+    let mut version = None;
+    let mut saved = json!([]);
+    let mut call_store = |method: &str, params: Value| {
+        assert_eq!(params["namespace"], "pelican-history");
+        assert_eq!(params["key"], "recent");
+        match method {
+            "host.state.get" => Ok(json!({
+                "record": version.map(|version| json!({"value": saved, "version": version, "schema_version": 1})),
+            })),
+            "host.state.put" => {
+                assert_eq!(params["expected_version"].as_u64(), version);
+                if version.is_none() {
+                    version = Some(1);
+                    let mut legacy_record = older.clone();
+                    legacy_record.as_object_mut().unwrap().remove("trigger");
+                    saved = json!([legacy_record]);
+                    Err(PluginFault::new(
+                        ErrorCode::Conflict,
+                        "another tab saved a record",
+                    ))
+                } else {
+                    assert_eq!(version, Some(1), "a duplicate run must not write again");
+                    saved = params["value"].clone();
+                    version = Some(2);
+                    Ok(json!({"version": 2}))
+                }
+            }
+            other => panic!("unexpected history host callback {other}"),
+        }
+    };
+    assert_eq!(
+        history_call(&mut host, None, &mut call_store).await,
+        (200, json!({"records": []}))
+    );
+    let expected = (200, json!({"records": [newer, older]}));
+    assert_eq!(
+        history_call(&mut host, Some(&newer), &mut call_store).await,
+        expected
+    );
+    assert_eq!(
+        history_call(&mut host, Some(&newer), &mut call_store).await,
+        expected
+    );
+    assert_eq!(
+        history_call(&mut host, None, &mut call_store).await,
+        expected
+    );
+    let mut invalid = newer.clone();
+    invalid["apiKey"] = json!("a-placeholder-secret");
+    let (status, _) = history_call(&mut host, Some(&invalid), &mut |_: &str, _: Value| {
+        panic!("invalid records must not reach the state store")
+    })
+    .await;
+    assert_eq!(status, 400);
     host.shutdown().await;
 }
 
