@@ -88,6 +88,10 @@
     .history-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px 14px; padding: 16px 22px; border-bottom: 1px solid var(--line); }
     .history-count { font-size: 11px; color: var(--blue-ink); background: var(--soft); padding: 2px 8px; border-radius: 7px; }
     .history-hint, .record-secondary { font-size: 11px; color: var(--muted); }
+    .history-pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 22px; border-top: 1px solid var(--line); }
+    .history-pager button, .history-warning button { font-size: 12px; padding: 5px 9px; }
+    .history-warning { margin: 0; padding: 9px 22px; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .history-warning p { margin: 4px 0; }
     .history-empty { margin: 0; text-align: center; padding: 31px 16px; color: var(--muted); font-size: 12px; }
     .history-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
     .history-table th { color: var(--muted); font-size: 11px; font-weight: 500; padding: 9px 16px; background: var(--stage); border-bottom: 1px solid var(--line); }
@@ -317,15 +321,22 @@
   <section class="panel history" aria-labelledby="history-title">
     <div class="history-heading">
       <div class="card-title"><h2 id="history-title">生成记录</h2><span id="history-count" class="history-count">0 条</span></div>
-      <span id="history-hint" class="history-hint" role="status">点击缩略图看大图</span>
+      <span id="history-hint" class="history-hint" role="status">点击缩略图看大图 · 每页 20 条</span>
     </div>
+    <p id="history-schedule-warning" class="history-warning" role="status" hidden></p>
+    <div id="history-unsaved" class="history-warning" role="status" hidden></div>
     <p id="history-empty" class="history-empty">还没有生成记录。点「开始测试」，结果会出现在这里。</p>
     <table class="history-table" id="history-table" role="table" aria-labelledby="history-title" hidden>
       <thead role="rowgroup"><tr role="row"><th scope="col">生成时间</th><th scope="col">模型 / 推理强度</th><th scope="col">Key / 上游账号</th><th scope="col">结果</th><th scope="col">Token 用量</th><th scope="col">动画</th></tr></thead>
       <tbody role="rowgroup" id="history-rows"></tbody>
     </table>
+    <nav id="history-pager" class="history-pager" aria-label="生成记录分页" hidden>
+      <button id="history-prev" class="record-link" type="button">上一页</button>
+      <span id="history-page" class="history-hint" aria-live="polite"></span>
+      <button id="history-next" class="record-link" type="button">下一页</button>
+    </nav>
   </section>
-  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.5.0</span></span><span>单次生成 · 点击缩略图放大</span></footer>
+  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.6.0</span></span><span>单次生成 · 点击缩略图放大</span></footer>
 </main>
 <dialog id="preview-dialog" aria-labelledby="dialog-title">
   <div class="dialog-header">
@@ -363,8 +374,10 @@
   const FIXED_PROMPT = '用svg绘制一个2D鹈鹏骑自行车的动画的html，不要用skill，不用测试';
   const MAX_TEXT = 512 * 1024;
   const MAX_FRAME = 2 * 1024 * 1024;
-  const MAX_RECORDS = 20;
+  const PAGE_SIZE = 20;
+  const HOSTED_RECORD_BYTES = 900 * 1024;
   const HISTORY_KEY = 'cpr-pelican.history.v1';
+  const RUN_KEY = 'cpr-pelican.run.v2.';
   const outcomes = {
     generated: ['已生成', 'success'], no_svg: ['未返回 SVG', 'warning'],
     incomplete: ['输出未完成', 'warning'], stopped: ['已停止', 'warning'], failed: ['生成失败', 'error'],
@@ -375,7 +388,6 @@
   };
   const $ = id => document.getElementById(id);
   const bridge = window.codexProxyPlugin;
-  const historyBudget = bridge ? 240 * 1024 : 2 * 1024 * 1024;
   const encoder = new TextEncoder();
   const localProxy = document.querySelector('meta[name="pelican-local-proxy"]')?.content === '1'
     && location.protocol === 'http:' && location.hostname === '127.0.0.1';
@@ -386,12 +398,17 @@
   let controller = null;
   let state = null;
   let savedRecords = [];
-  const pageRecords = new Map();
+  let standaloneSnapshot = [];
+  let historyOffset = 0;
+  let historyTotal = 0;
+  let historySnapshot = null;
+  let historyPaging = false;
+  const unsaved = new Map();
   let historyTask;
   let historyMessage = '';
   let renderedHistory;
-  let oversizedSource = null;
   let openedRecord = null;
+  let openIntent = 0;
   let renderFrame = 0;
   let elapsedTimer = 0;
   let closed = false;
@@ -451,17 +468,21 @@
     $('run-label').textContent = busy ? '停止生成' : '开始测试';
   }
 
-  async function request(method, path, body) {
+  async function request(method, path, body, query) {
     const response = await bridge.request({
       method, path: path.replace(/^\//, ''),
       ...(body === undefined ? {} : { contentType: 'application/json', body: JSON.stringify(body) }),
+      ...(query === undefined ? {} : { query }),
     });
     const text = new TextDecoder().decode(response.body);
     let value;
     try { value = JSON.parse(text); }
     catch { throw new Error('插件返回了无法读取的数据，请刷新页面。'); }
-    if (response.status < 200 || response.status >= 300)
-      throw new Error(value.message || `读取失败（HTTP ${response.status}）`);
+    if (response.status < 200 || response.status >= 300) {
+      const error = new Error(value.message || `读取失败（HTTP ${response.status}）`);
+      error.status = response.status;
+      throw error;
+    }
     return value;
   }
 
@@ -516,6 +537,14 @@
     const status = $('schedule-status');
     status.dataset.kind = scheduleError ? 'error' : 'info';
     status.textContent = [scheduleMessage, next].filter(Boolean).join(' · ');
+    const failure = scheduleSnapshot?.historySaveFailure;
+    const warning = $('history-schedule-warning');
+    warning.hidden = !failure;
+    if (failure) {
+      const message = failure.reason === 'full' ? '存储已满，本轮结果未保存。'
+        : failure.reason === 'too_large' ? '本轮结果太大，未保存。' : '本轮结果未确认保存。';
+      warning.textContent = '定时测试 · ' + new Date(failure.slotMs).toLocaleString('zh-CN') + ' · ' + message;
+    }
   }
 
   function scheduleKeyOptions(preferred) {
@@ -689,26 +718,27 @@
     return node;
   }
 
-  function sortRecords(records) {
-    if (!Array.isArray(records)) throw new Error('Invalid history');
-    const valid = records.filter(record => record && typeof record.id === 'string'
+  function validRecord(record) {
+    return record && typeof record.id === 'string'
       && (record.trigger === 'scheduled'
         ? Number.isSafeInteger(record.scheduledAtMs) && record.id === 'scheduled-' + record.scheduledAtMs
         : (record.trigger === 'manual' || record.trigger === undefined) && /^[a-f\d]{32}$/i.test(record.id))
       && Number.isSafeInteger(record.startedAtMs) && record.startedAtMs >= 0 && record.startedAtMs <= 8640000000000000
       && typeof record.model === 'string' && typeof record.effort === 'string' && Object.hasOwn(outcomes, record.outcome)
-      && (record.source === null || (typeof record.source === 'string' && record.source.length <= MAX_TEXT)));
-    return [...new Map(valid.map(record => [record.id, record])).values()]
-      .sort((a, b) => b.startedAtMs - a.startedAtMs || b.id.localeCompare(a.id)).slice(0, MAX_RECORDS);
+      && (record.source === null || (typeof record.source === 'string' && record.source.length <= MAX_TEXT));
   }
 
   function localHistory() {
-    const raw = window.localStorage.getItem(HISTORY_KEY);
-    return raw ? sortRecords(JSON.parse(raw)) : [];
-  }
-
-  function recordSource(record) {
-    return oversizedSource?.id === record.id ? oversizedSource.text : record.source;
+    const storage = window.localStorage;
+    const legacy = JSON.parse(storage.getItem(HISTORY_KEY) ?? '[]');
+    const records = new Map(legacy.filter(validRecord).map(record => [record.id, record]));
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      if (!key?.startsWith(RUN_KEY)) continue;
+      const record = JSON.parse(storage.getItem(key));
+      if (validRecord(record) && key === RUN_KEY + record.id) records.set(record.id, record);
+    }
+    return [...records.values()].sort((a, b) => b.startedAtMs - a.startedAtMs || b.id.localeCompare(a.id));
   }
 
   function identityLabel(name, id) {
@@ -717,18 +747,19 @@
 
   function renderHistory() {
     if (closed) return;
-    const records = sortRecords([...savedRecords, ...pageRecords.values()]);
-    $('history-hint').textContent = historyMessage || '点击缩略图看大图 · 最多保留 20 条';
-    $('history-count').textContent = records.length + ' 条';
-    $('history-empty').hidden = records.length > 0;
-    $('history-table').hidden = records.length === 0;
-    const signature = JSON.stringify(records.map(record => [
-      record.id, Boolean(recordSource(record)), record.clientKeyName, record.clientKeyId,
-      record.accountName, record.accountId,
-    ]));
+    $('history-hint').textContent = historyMessage || '点击缩略图看大图 · 每页 20 条';
+    $('history-count').textContent = number.format(historyTotal) + ' 条';
+    $('history-empty').hidden = savedRecords.length > 0;
+    $('history-table').hidden = savedRecords.length === 0;
+    const pages = Math.ceil(historyTotal / PAGE_SIZE);
+    $('history-pager').hidden = pages < 2;
+    $('history-page').textContent = '第 ' + (historyOffset / PAGE_SIZE + 1) + ' / ' + pages + ' 页';
+    $('history-prev').disabled = historyPaging || historyOffset === 0;
+    $('history-next').disabled = historyPaging || historyOffset + PAGE_SIZE >= historyTotal;
+    const signature = JSON.stringify(savedRecords.map(record => record.id));
     if (signature === renderedHistory) return;
     renderedHistory = signature;
-    $('history-rows').replaceChildren(...records.map(historyRow));
+    $('history-rows').replaceChildren(...savedRecords.map(historyRow));
   }
 
   function historyRow(record) {
@@ -761,18 +792,18 @@
     cells[4].append(element('div', 'record-primary record-tokens', '入 ' + count(record.inputTokens) + ' / 出 ' + count(record.outputTokens)),
       element('span', 'record-secondary record-tokens', '缓存 ' + count(record.cachedTokens) + ' · 推理 ' + count(record.reasoningTokens)));
 
-    const source = recordSource(record);
-    if (!source) {
+    const source = record.source;
+    if (!source && !record.hasSource) {
       cells[5].append(element('span', 'record-secondary', record.sourceOmitted ? '源码超出保存上限' : '—'));
       return row;
     }
     const actions = element('div', 'record-actions');
-    const html = extractDocument(source);
-    if (html) {
-      const button = element('button', 'thumb', '看大图');
+    const html = source ? extractDocument(source) : '';
+    if (html || (!source && record.hasSource)) {
+      const button = element('button', 'thumb', html ? '看大图' : '打开');
       button.type = 'button';
-      button.setAttribute('aria-label', '查看 ' + record.model + ' 在 ' + date.toLocaleString('zh-CN') + ' 生成的动画大图');
-      const url = svgPreview(html, true);
+      button.setAttribute('aria-label', '打开 ' + record.model + ' 在 ' + date.toLocaleString('zh-CN') + ' 生成的结果');
+      const url = html ? svgPreview(html, true) : '';
       if (url) {
         const image = element('img');
         image.alt = '';
@@ -797,14 +828,55 @@
     return row;
   }
 
-  async function loadHistory() {
+  async function loadHistory(offset = historyOffset) {
+    if (closed) return;
     try {
-      savedRecords = bridge ? sortRecords((await request('GET', '/history')).records) : localHistory();
+      if (bridge) {
+        const query = offset ? 'offset=' + offset + '&snapshot=' + historySnapshot : undefined;
+        const page = await request('GET', '/history', undefined, query);
+        if (!Number.isSafeInteger(page.total) || !Number.isSafeInteger(page.snapshot) || !Array.isArray(page.records)) {
+          throw new Error('Invalid history page');
+        }
+        savedRecords = page.records.filter(validRecord);
+        historyTotal = page.total;
+        historySnapshot = page.snapshot;
+      } else {
+        if (!offset) standaloneSnapshot = localHistory();
+        savedRecords = standaloneSnapshot.slice(offset, offset + PAGE_SIZE);
+        historyTotal = standaloneSnapshot.length;
+      }
+      historyOffset = offset;
       historyMessage = '';
     } catch {
       historyMessage = '无法读取已保存的记录，新结果仍可在本页查看。';
     }
     renderHistory();
+  }
+
+  function changeHistoryPage(offset) {
+    if (historyPaging || offset < 0 || offset >= historyTotal) return;
+    historyPaging = true;
+    renderHistory();
+    historyTask = historyTask.then(() => historyOffset === offset ? undefined : loadHistory(offset)).finally(() => {
+      historyPaging = false;
+      renderHistory();
+    });
+    return historyTask;
+  }
+
+  function renderUnsaved() {
+    if (closed) return;
+    $('history-unsaved').hidden = !unsaved.size;
+    $('history-unsaved').replaceChildren(...[...unsaved.values()].map(({ record, message }) => {
+      const row = element('p', '', record.model + ' · ' + new Date(record.startedAtMs).toLocaleTimeString('zh-CN') + ' · ' + message);
+      if (record.source) {
+        const button = element('button', 'record-link', '查看本次结果');
+        button.type = 'button';
+        button.addEventListener('click', () => openRecord(record, true));
+        row.append(button);
+      }
+      return row;
+    }));
   }
 
   function rememberRun(outcome) {
@@ -822,37 +894,30 @@
       reasoningTokens: numeric(state.usage?.output_tokens_details?.reasoning_tokens),
       source: state.text || state.refusal || null, sourceOmitted: false,
     };
-    oversizedSource = null;
-    if (encoder.encode(JSON.stringify(record)).length > historyBudget - 1024) {
-      oversizedSource = { id: record.id, text: record.source };
-      record.source = null;
-      record.sourceOmitted = true;
-    }
-    pageRecords.set(record.id, record);
-    if (pageRecords.size > MAX_RECORDS) pageRecords.delete(pageRecords.keys().next().value);
-    historyMessage = '正在保存生成记录…';
-    renderHistory();
+    unsaved.set(record.id, { record, message: '正在保存生成记录…' });
+    renderUnsaved();
 
     historyTask = historyTask.then(async () => {
       try {
         if (bridge) {
-          savedRecords = sortRecords((await request('POST', '/history', record)).records);
-        } else {
-          const records = sortRecords([...localHistory(), record]);
-          let serialized = JSON.stringify(records);
-          while (encoder.encode(serialized).length > historyBudget) {
-            records.pop();
-            serialized = JSON.stringify(records);
+          if (encoder.encode(JSON.stringify(record)).length > HOSTED_RECORD_BYTES) {
+            const error = new Error('本次结果太大，未保存到生成记录。');
+            error.status = 413;
+            throw error;
           }
-          window.localStorage.setItem(HISTORY_KEY, serialized);
-          savedRecords = records;
+          if (!(await request('POST', '/history', record)).saved) throw new Error('Save was not confirmed');
+        } else {
+          window.localStorage.setItem(RUN_KEY + record.id, JSON.stringify(record));
         }
-        pageRecords.delete(record.id);
-        historyMessage = pageRecords.size ? '部分记录未保存，仍可在本页查看。' : '';
-      } catch {
-        historyMessage = '保存失败，当前记录仍可在本页查看。';
+        unsaved.delete(record.id);
+        await loadHistory(0);
+      } catch (error) {
+        const message = error.status === 507 || error.status === 413 ? error.message
+          : error.name === 'QuotaExceededError' ? '浏览器存储已满，本次结果未保存。'
+          : bridge ? '本次结果未确认保存，仍可在本页查看。' : '本次结果未保存，仍可在本页查看。';
+        unsaved.set(record.id, { record, message });
       }
-      renderHistory();
+      renderUnsaved();
     });
   }
 
@@ -1091,9 +1156,23 @@
     }
   }
 
-  function openRecord(record, preferAnimation) {
-    const source = recordSource(record);
-    if (!source) return;
+  async function openRecord(record, preferAnimation) {
+    const intent = ++openIntent;
+    let source = record.source;
+    if (!source && record.hasSource && bridge) {
+      try {
+        const saved = (await request('GET', '/history/record', undefined, 'id=' + record.id)).record;
+        if (saved?.id !== record.id || !saved.source) throw new Error('Missing saved source');
+        source = saved.source;
+      } catch {
+        if (intent === openIntent) {
+          historyMessage = '无法打开这条生成记录，请重试。';
+          renderHistory();
+        }
+        return;
+      }
+    }
+    if (!source || closed || intent !== openIntent) return;
     const html = extractDocument(source);
     openedRecord = { source, html, startedAtMs: record.startedAtMs };
     $('dialog-meta').textContent = [record.model, record.effort, new Date(record.startedAtMs).toLocaleString('zh-CN'),
@@ -1325,8 +1404,10 @@
   }
 
   $('run').addEventListener('click', run);
+  $('history-prev').addEventListener('click', () => changeHistoryPage(historyOffset - PAGE_SIZE));
+  $('history-next').addEventListener('click', () => changeHistoryPage(historyOffset + PAGE_SIZE));
   $('refresh').addEventListener('click', async () => {
-    historyTask = historyTask.then(loadHistory);
+    historyTask = historyTask.then(() => loadHistory(0));
     await initialize();
   });
   $('connect').addEventListener('click', () => $('connection-dialog').showModal());
@@ -1380,7 +1461,9 @@
   window.addEventListener('codex-proxy-themechange', theme);
   const poll = bridge ? setInterval(() => {
     if (closed || document.hidden) return;
-    historyTask = historyTask.then(loadHistory);
+    if (!historyOffset && !historyPaging) {
+      historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
+    }
     void refreshSchedule();
   }, 30000) : 0;
   window.addEventListener('pagehide', () => {

@@ -39,6 +39,23 @@ struct Plan {
     armed_after_slot_ms: u64,
     last_claimed_slot_ms: Option<u64>,
     pending: Option<Claim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history_save_failure: Option<SaveFailure>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveFailure {
+    slot_ms: u64,
+    reason: SaveFailureReason,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SaveFailureReason {
+    Full,
+    TooLarge,
+    Unconfirmed,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -100,6 +117,7 @@ impl Plan {
             "settings": self.settings,
             "nextRunAtMs": self.next_slot(now_ms)?,
             "runningSinceMs": self.pending.as_ref().map(|claim| claim.started_at_ms),
+            "historySaveFailure": self.history_save_failure,
         }))
     }
 }
@@ -149,8 +167,14 @@ pub(super) async fn save(host: &HostClient, payload: &[u8]) -> Result<Value, Plu
         return Err(invalid_cron());
     }
     let (previous, version) = read(host).await?;
-    let (last_claimed_slot_ms, pending) = previous
-        .map(|plan| (plan.last_claimed_slot_ms, plan.pending))
+    let (last_claimed_slot_ms, pending, history_save_failure) = previous
+        .map(|plan| {
+            (
+                plan.last_claimed_slot_ms,
+                plan.pending,
+                plan.history_save_failure,
+            )
+        })
         .unwrap_or_default();
     let plan = Plan {
         settings,
@@ -158,6 +182,7 @@ pub(super) async fn save(host: &HostClient, payload: &[u8]) -> Result<Value, Plu
         armed_after_slot_ms: minute(now),
         last_claimed_slot_ms,
         pending,
+        history_save_failure,
     };
     write(host, version, &plan).await?;
     plan.view(now)
@@ -192,8 +217,7 @@ pub(crate) async fn reconcile(call: TypedCall<Empty>) -> Result<TypedReply<Empty
             // If the final result was already saved, append keeps that record by ID.
             let mut record = run::record_for(&claim);
             record.issue = Some(history::Issue::Interrupted);
-            history::append(host, record).await?;
-            release(host, claim.slot_ms).await?;
+            finish(host, claim.slot_ms, record).await?;
         }
         return Ok(done());
     }
@@ -220,12 +244,35 @@ pub(crate) async fn reconcile(call: TypedCall<Empty>) -> Result<TypedReply<Empty
     let reserve_ms = 10_000.min(budget_ms / 4);
     let remaining_ms = budget_ms.saturating_sub(started.elapsed().as_millis() as u64 + reserve_ms);
     let record = run::execute(host, &claim, remaining_ms.min(MAX_MODEL_MS)).await;
-    history::append(host, record).await?;
-    release(host, slot_ms).await?;
+    finish(host, slot_ms, record).await?;
     Ok(done())
 }
 
-async fn release(host: &HostClient, slot_ms: u64) -> Result<(), PluginFault> {
+async fn finish(
+    host: &HostClient,
+    slot_ms: u64,
+    record: history::Record,
+) -> Result<(), PluginFault> {
+    let failure = history::append(host, record)
+        .await
+        .err()
+        .map(|error| SaveFailure {
+            slot_ms,
+            reason: match error.message.as_str() {
+                history::FULL => SaveFailureReason::Full,
+                history::TOO_LARGE => SaveFailureReason::TooLarge,
+                _ => SaveFailureReason::Unconfirmed,
+            },
+        });
+    // A failed archive write does not extend the claim or retry the model call.
+    release(host, slot_ms, failure).await
+}
+
+async fn release(
+    host: &HostClient,
+    slot_ms: u64,
+    failure: Option<SaveFailure>,
+) -> Result<(), PluginFault> {
     for _ in 0..4 {
         let (Some(mut plan), version) = read(host).await? else {
             return Ok(());
@@ -238,6 +285,7 @@ async fn release(host: &HostClient, slot_ms: u64) -> Result<(), PluginFault> {
             return Ok(());
         }
         plan.pending = None;
+        plan.history_save_failure = failure;
         match write(host, version, &plan).await {
             Ok(()) => return Ok(()),
             Err(error) if error.code == ErrorCode::Conflict => continue,
@@ -255,7 +303,9 @@ async fn read(host: &HostClient) -> Result<(Option<Plan>, Option<u64>), PluginFa
 }
 
 async fn write(host: &HostClient, version: Option<u64>, plan: &Plan) -> Result<(), PluginFault> {
-    state::put(host, NAMESPACE, KEY, version, plan).await
+    state::put(host, NAMESPACE, KEY, version, plan)
+        .await
+        .map(|_| ())
 }
 
 fn now_ms() -> u64 {
@@ -298,6 +348,7 @@ mod tests {
             armed_after_slot_ms: ms("2026-11-18T00:59:00Z"),
             last_claimed_slot_ms: None,
             pending: None,
+            history_save_failure: None,
         }
     }
 

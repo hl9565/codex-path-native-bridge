@@ -16,7 +16,11 @@ The prompt is fixed, including the original spelling:
 
 The page consumes native Responses SSE or JSON. Each finished attempt appears under **生成记录**, newest first, with its manual/scheduled source, model, effort, Client Key, upstream account, outcome, timings and token counts. Click its thumbnail for a larger animation, or **源码** to see the original output. The dialog includes time to first content and options to copy the HTML or download it in standalone mode. Viewing a record never sends a generation request. Missing usage stays unknown. A response must complete and contain an SVG before the page marks it generated. Incomplete, failed and stopped attempts keep any available source and have their own status. **停止生成** cancels the current manual request.
 
-Standalone history stays in the current browser and origin; the CPR page keeps its own history per plugin instance using CPR's private state API. Both keep up to 20 records and evict the oldest when their size budget fills (2 MiB in the browser, 240 KiB in CPR). Oversize outputs keep only their metadata. CPR records the non-secret Key ID/name and looks up the actual routed account by the gateway request ID, checking that the usage row belongs to that Key. Missing usage or account data stays unknown; the account ID can be shown when its display name is unavailable. Standalone records show a short Key fingerprint and cannot resolve the upstream account. Neither mode persists API Key secrets. Older records remain readable; missing identity fields are not backfilled.
+History displays 20 records per page. Every new run is saved separately, and both modes still read records saved by older versions. The hosted archive shows the most recently saved runs first and retrieves the full source on demand for larger outputs. Opening a result does not use the model.
+
+Standalone history uses the current browser and origin's storage quota. CPR stores history per plugin instance in PostgreSQL: the new run archive has 16 MiB and 10,000 storage items, with a separate index. A long result can use multiple items, so the number of saved runs depends on their sizes. One hosted record can be up to 900 KiB as JSON. If the archive is full or a result exceeds its size limit, the new result is reported as unsaved and all saved records remain available. A failed manual save can still be opened and copied while the page remains open. Scheduled save failures appear above the history table; they do not block the next scheduled run.
+
+CPR records the non-secret Key ID/name and looks up the actual routed account by the gateway request ID, checking that the usage row belongs to that Key. Missing usage or account data stays unknown; the account ID can be shown when its display name is unavailable. Standalone records show a short Key fingerprint and cannot resolve the upstream account. Neither mode persists API Key secrets. Missing identity fields in older records are not backfilled.
 
 ### Schedule a test in CPR
 
@@ -40,11 +44,11 @@ The local service listens only on `127.0.0.1` and exposes the page plus the two 
 
 Standalone mode displays the generated HTML in a separate sandboxed iframe with inline scripts/styles permitted and external networking blocked, and offers HTML download. It uses the same fixed prompt and sends a single `POST /v1/responses` request. Opening the page or connecting only reads the model catalog; it never automatically generates an animation. Reconnect after reloading the page.
 
-The plugin adds administrator-only `GET /bootstrap` and `POST /models` management routes to read non-secret Key summaries and the selected Key's model list. `GET /history` and `POST /history` read and append generation records in the private `pelican-history` namespace. `GET /schedule`, `POST /schedule` and `POST /schedule/pause` manage the plan in `pelican-schedule`. The plugin never reads account credentials. `web/pelican.html` is declared in both the author manifest and management registration; the existing packaging CLI collects it without an additional build step.
+The plugin adds administrator-only `GET /bootstrap` and `POST /models` management routes to read non-secret Key summaries and the selected Key's model list. `GET /history` lists a page, `GET /history/record?id=…` opens a saved result, and `POST /history` appends a manual run. New runs use `pelican-archive` and `pelican-archive-index`; existing `pelican-history` data stays readable. `GET /schedule`, `POST /schedule` and `POST /schedule/pause` manage the plan in `pelican-schedule`. The plugin never reads account credentials. `web/pelican.html` is declared in both the author manifest and management registration; the existing packaging CLI collects it without an additional build step.
 
 ## Compatibility
 
-- Source/package version: `0.5.0`.
+- Source/package version: `0.6.0`.
 - Requires CPR `>=3.44.0, <4.0.0` with manifest schema 2, RPC protocol 7, `management` 2, and `maintenance` 1. CPR checks the declared contract at install, version planning and startup.
 - The official SDK and packaging CLI are pinned to CPR revision `c622f085748f812936a7371fcc85d1621fa72ca8` (`v3.44.0`). After a host upgrade within the range, check that the plugin still runs and the Pelican page opens.
 - Stable plugin ID: `selfhosted.omp-native-bridge`. The legacy ID and state namespaces are retained so an existing instance can keep its saved runs and schedule.
@@ -73,9 +77,9 @@ An explicit target requires its Rust target components and a suitable linker/too
 
 ## Install in CPR
 
-1. In CPR's **Plugin Management**, choose **GitHub**, enter `hl9565/codex-path-native-bridge`, and set the tag to `v0.5.0`. Keep download authentication set to none and select the Linux x86_64 archive. For a local build, choose **上传包** and select the archive from `dist/`.
+1. For a local build, choose **上传包** in CPR's **Plugin Management** and select the archive from `dist/`. To install a published version instead, choose **GitHub**, enter `hl9565/codex-path-native-bridge`, select a published tag and the Linux x86_64 archive, and leave download authentication set to none.
 2. Review the version, target platform and SHA-256 before installing.
-3. When upgrading `0.4.0`, switch the existing instance to `0.5.0` so its history and schedule carry over. CPR's version plan drops the old HTTP binding. Clients relying on the former alias need to use CPR's native `/v1/responses` endpoint.
+3. To keep your history and schedule, install the new artifact and switch the existing instance to it. If upgrading from `0.4.0`, CPR's version plan drops the old HTTP binding, and clients using its former alias need to use CPR's native `/v1/responses` endpoint.
 4. Open **鹈鹕** from the enabled instance. Its management page uses existing CPR Client Keys and models; no plugin credentials are required.
 
 ### Trust and failure scope
@@ -86,7 +90,9 @@ Since `0.5.0`, ordinary gateway traffic does not enter the plugin. Its calls on 
 
 ## Verification
 
-Run `node --test tests/pelican-page.test.mjs tests/pelican-server.test.mjs` (or `make web-test`) to check the page and loopback service with mock responses and credentials. Run `cargo test --locked` to verify that the compiled plugin registers only management and maintenance, and exercise identity reconciliation, durable claims, repeated maintenance callbacks, failure records and pause.
+Run `node --test tests/pelican-page.test.mjs tests/pelican-server.test.mjs` (or `make web-test`) to check the page and loopback service with mock responses and credentials. Run `cargo test --locked` to verify the plugin's management and maintenance registration, pagination, source preservation, quota handling, account lookup and schedule behavior.
+
+The Linux x86_64 `0.6.0` package was tested on isolated CPR `3.44.0` using an in-place upgrade from `0.5.0`. The old result and schedule were retained. The test ran a manual and scheduled request against a loopback fixture, exercised concurrent saves and paging, reached the PostgreSQL archive quota, and restarted CPR. The archive still reported 48 saved runs after the rejected write and restart, and the test reopened the complete source of a split result.
 
 The Linux x86_64 `0.5.0` package was verified on an isolated CPR `3.44.0` host by switching an existing `0.4.0` instance in place. CPR dropped the HTTP binding and retained the saved history and plan. A manual run and a scheduled run completed against a loopback fixture after the switch, and the scheduled plan was paused successfully.
 
@@ -147,6 +153,10 @@ This project's source is licensed under [Apache License 2.0](LICENSE).
 It depends on CPR's official `gateway-plugin-sdk`, which inherits `Apache-2.0` from the [pinned upstream workspace](https://github.com/zyycn/codex-proxy-rs/blob/c622f085748f812936a7371fcc85d1621fa72ca8/backend/Cargo.toml). The pinned upstream root contains no `NOTICE` file. Dependencies remain under their respective licenses; this project's license does not relicense them. Binary redistributors must also satisfy the licenses of the dependencies they distribute.
 
 ## Changes
+
+### 0.6.0
+
+Save individual results, page through 20 records at a time, retain existing history and show explicit save failures when storage fills. Archive long outputs in parts and reassemble them when the result opens.
 
 ### 0.5.0
 

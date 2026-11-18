@@ -46,11 +46,16 @@ class Element {
   close() { this.open = false; this.handlers.get('close')?.(); }
 }
 
-function storage() {
+function storage(maxEntries = Infinity) {
   const entries = new Map();
   return {
+    get length() { return entries.size; },
+    key: index => [...entries.keys()][index] ?? null,
     getItem: key => entries.get(key) ?? null,
-    setItem: (key, value) => entries.set(key, value),
+    setItem: (key, value) => {
+      if (!entries.has(key) && entries.size >= maxEntries) throw new DOMException('Full', 'QuotaExceededError');
+      entries.set(key, value);
+    },
     snapshot: () => [...entries.values()].join('\n'),
   };
 }
@@ -157,8 +162,10 @@ test('one click sends the literal prompt once and preserves streamed source and 
           assert.equal(record.gatewayRequestId, 'host-request-1');
           assert.equal(record.clientKeyId, 'key-id');
           stored.unshift({ ...record, accountName: 'Routed Account' });
+          response = { saved: true };
+        } else {
+          response = { records: stored, total: stored.length, snapshot: stored.length };
         }
-        response = { records: stored };
       } else throw new Error('Unexpected management route');
       return { status: 200, body: new TextEncoder().encode(JSON.stringify(response)).buffer };
     },
@@ -214,7 +221,7 @@ test('standalone history survives reload and opens the older animation without r
     assert.equal(source.elements.get('current-result').hidden, true);
   }
   assert.doesNotMatch(localStorage.snapshot(), /test-key-not-a-real-secret|gateway\.example\.test/);
-  const labels = JSON.parse(localStorage.snapshot()).map(record => record.clientKeyName);
+  const labels = localStorage.snapshot().split('\n').map(raw => JSON.parse(raw).clientKeyName);
   assert.match(labels[0], /^#[a-f0-9]{12}$/);
   assert.equal(labels[0], labels[1]);
 
@@ -256,7 +263,7 @@ test('hosted scheduling config is independent of the manual run and can be pause
         id: 'scheduled-' + scheduledAtMs, startedAtMs: scheduledAtMs + 700, scheduledAtMs,
         trigger: 'scheduled', model: 'nightly-model', effort: 'high', outcome: 'generated',
         clientKeyName: 'Scheduled Key', accountName: 'Night Account', durationMs: 200, source: '<svg></svg>',
-      }] };
+      }], total: 1, snapshot: 1 };
       else if (path === '/schedule' || path === '/schedule/pause') {
         if (method === 'POST') settings = path.endsWith('/pause') ? { ...settings, enabled: false } : input;
         data = { settings, nextRunAtMs: settings?.enabled ? scheduledAtMs + 60_000 : null };
@@ -297,4 +304,83 @@ test('hosted scheduling config is independent of the manual run and can be pause
   assert.equal(reopened.elements.get('schedule-enabled').checked, false);
   assert.equal(reopened.elements.get('schedule-state').textContent, '已暂停');
   assert.equal(modelRuns, 0);
+});
+
+function archivedRecord(n, source) {
+  return {
+    id: n.toString(16).padStart(32, '0'), startedAtMs: 1_690_000_000_000 + n,
+    model: 'test-model', effort: 'low', outcome: 'generated', durationMs: 10,
+    source, sourceOmitted: false,
+  };
+}
+
+test('hosted history flips to the older page and fetches full source only when opened', async () => {
+  const original = archivedRecord(0, '<svg><title>older ride</title><!--' + 'x'.repeat(80_000) + '--></svg>');
+  const recent = Array.from({ length: 20 }, (_, n) => archivedRecord(20 - n, '<svg></svg>'));
+  const calls = [];
+  const status = new TextEncoder();
+  const bridge = {
+    version: 2,
+    request: async ({ path, query }) => {
+      let data;
+      if (path === 'bootstrap') data = { prompt: PROMPT, keys: [] };
+      else if (path === 'schedule') data = { settings: null, historySaveFailure: { slotMs: 1_690_000_000_000, reason: 'full' } };
+      else {
+        calls.push({ path, query });
+        if (path === 'history') data = { total: 21, snapshot: 21,
+          records: query ? [{ ...original, source: null, hasSource: true }] : recent };
+        else if (path === 'history/record') data = { record: original };
+        else throw new Error('Unexpected route ' + path);
+      }
+      return { status: 200, body: status.encode(JSON.stringify(data)).buffer };
+    },
+    models: { responses: async () => { throw new Error('History must not generate'); } },
+  };
+  const { elements } = await page({ bridge });
+  assert.equal(elements.get('history-count').textContent, '21 条');
+  assert.equal(elements.get('history-rows').children.length, 20);
+  assert.match(elements.get('history-schedule-warning').textContent, /存储已满.*未保存/);
+  await elements.get('history-next').fire('click');
+  assert.deepEqual(calls.at(-1), { path: 'history', query: 'offset=20&snapshot=21' });
+  assert.equal(elements.get('history-page').textContent, '第 2 / 2 页');
+  assert.equal(elements.get('history-next').disabled, true);
+  assert.equal(elements.get('history-rows').children.length, 1);
+  const actions = elements.get('history-rows').children[0].children[5].children[0];
+  await actions.children[1].fire('click');
+  assert.deepEqual(calls.at(-1), { path: 'history/record', query: 'id=' + original.id });
+  assert.equal(elements.get('preview-dialog').open, true);
+  assert.equal(elements.get('dialog-source').textContent, original.source);
+  await elements.get('history-prev').fire('click');
+  assert.equal(elements.get('history-rows').children.length, 20);
+});
+
+test('browser quota preserves legacy history and keeps the rejected source accessible in the page', async () => {
+  const localStorage = storage(2);
+  const old = Array.from({ length: 20 }, (_, n) => archivedRecord(n, '<svg><title>legacy ' + n + '</title></svg>'));
+  const legacy = JSON.stringify(old);
+  localStorage.setItem('cpr-pelican.history.v1', legacy);
+  let runs = 0;
+  const { elements, submit } = await page({ localStorage, proxy: true, fetch: async url =>
+    url === '/api/models' ? Response.json({ data: [{ id: 'test-model' }] })
+      : Response.json({ status: 'completed', output_text: '<svg><title>new ' + ++runs + '</title></svg>' })
+  });
+  await submit();
+  await elements.get('run').fire('click');
+  await tick();
+  assert.equal(elements.get('history-count').textContent, '21 条');
+  const before = localStorage.snapshot();
+  await elements.get('run').fire('click');
+  await tick();
+  assert.equal(localStorage.snapshot(), before);
+  assert.equal(localStorage.getItem('cpr-pelican.history.v1'), legacy);
+  const warning = elements.get('history-unsaved');
+  assert.equal(warning.hidden, false);
+  assert.match(warning.children[0].textContent, /存储已满.*未保存/);
+  await warning.children[0].children[0].fire('click');
+  assert.match(elements.get('dialog-source').textContent, /new 2/);
+  await elements.get('history-next').fire('click');
+  assert.equal(elements.get('history-rows').children.length, 1);
+  const oldest = elements.get('history-rows').children[0].children[5].children[0];
+  await oldest.children[1].fire('click');
+  assert.match(elements.get('dialog-source').textContent, /legacy 0/);
 });

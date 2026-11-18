@@ -1,13 +1,19 @@
+mod archive;
+
 use gateway_plugin_sdk::{ErrorCode, PluginFault, client::HostClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{identity, invalid, state, valid_effort};
 
-const NAMESPACE: &str = "pelican-history";
-const KEY: &str = "recent";
-const MAX_RECORDS: usize = 20;
-const MAX_BYTES: usize = 240 * 1024;
+pub(super) use archive::append;
+
+const PAGE_SIZE: usize = 20;
+const PREVIEW_BYTES: usize = 16 * 1024;
+const MAX_RECORD_BYTES: usize = 900 * 1024;
+pub(super) const FULL: &str = "pelican history storage is full";
+pub(super) const TOO_LARGE: &str = "pelican history record is too large";
+pub(super) const MISSING: &str = "pelican history record was not found";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -116,14 +122,45 @@ impl Record {
     }
 }
 
-pub(super) async fn list(host: &HostClient) -> Result<Value, PluginFault> {
-    let (records, _) = read(host).await?;
-    Ok(json!({ "records": records }))
+pub(super) async fn list(host: &HostClient, query: &str) -> Result<Value, PluginFault> {
+    let mut offset = None;
+    let mut snapshot = None;
+    if !query.is_empty() {
+        for part in query.split('&') {
+            let (name, value) = part.split_once('=').ok_or_else(invalid)?;
+            let field = match name {
+                "offset" => &mut offset,
+                "snapshot" => &mut snapshot,
+                _ => return Err(invalid()),
+            };
+            if field.is_some() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(invalid());
+            }
+            *field = Some(value.parse::<usize>().map_err(|_| invalid())?);
+        }
+    }
+    let offset = offset.unwrap_or(0);
+    if !offset.is_multiple_of(PAGE_SIZE) {
+        return Err(invalid());
+    }
+    let (records, total, snapshot) = archive::page(host, offset, snapshot).await?;
+    Ok(json!({ "records": records, "total": total, "snapshot": snapshot }))
+}
+
+pub(super) async fn detail(host: &HostClient, query: &str) -> Result<Value, PluginFault> {
+    let id = query
+        .strip_prefix("id=")
+        .filter(|id| valid_id(id))
+        .ok_or_else(invalid)?;
+    let record = archive::detail(host, id)
+        .await?
+        .ok_or_else(|| PluginFault::new(ErrorCode::InvalidInput, MISSING))?;
+    Ok(json!({ "record": record }))
 }
 
 pub(super) async fn save_manual(host: &HostClient, payload: &[u8]) -> Result<Value, PluginFault> {
-    if payload.len() > MAX_BYTES {
-        return Err(invalid());
+    if payload.len() > MAX_RECORD_BYTES {
+        return Err(too_large());
     }
     let mut record: Record = serde_json::from_slice(payload).map_err(|_| invalid())?;
     if record.trigger != Trigger::Manual || !record.is_valid() {
@@ -138,50 +175,36 @@ pub(super) async fn save_manual(host: &HostClient, payload: &[u8]) -> Result<Val
         None => None,
     };
     record.attach_account(host).await;
-    append(host, record).await
+    append(host, record).await?;
+    Ok(json!({ "saved": true }))
 }
 
-pub(super) async fn append(host: &HostClient, mut record: Record) -> Result<Value, PluginFault> {
-    if !record.is_valid() {
-        return Err(invalid());
-    }
-    if serde_json::to_vec(&record).map_err(|_| invalid())?.len() > MAX_BYTES - 2 {
+fn valid_id(id: &str) -> bool {
+    (id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || id.strip_prefix("scheduled-").is_some_and(|slot| {
+            slot.parse::<u64>()
+                .is_ok_and(|slot| id == scheduled_id(slot) && slot.is_multiple_of(60_000))
+        })
+}
+
+fn too_large() -> PluginFault {
+    PluginFault::new(ErrorCode::InvalidInput, TOO_LARGE)
+}
+
+fn list_entry(mut record: Record, complete: bool) -> Result<Value, PluginFault> {
+    let has_source = record
+        .source
+        .as_ref()
+        .is_some_and(|source| !source.is_empty());
+    if !complete
+        || serde_json::to_vec(&record.source)
+            .map_err(|_| invalid())?
+            .len()
+            > PREVIEW_BYTES
+    {
         record.source = None;
-        record.source_omitted = true;
     }
-
-    // A management page can be open in multiple tabs. Merge against the current
-    // version on each conflict so a later write cannot erase another run.
-    for _ in 0..4 {
-        let (mut records, version) = read(host).await?;
-        if records.iter().any(|saved| saved.id == record.id) {
-            return Ok(json!({ "records": records }));
-        }
-        records.push(record.clone());
-        records.sort_unstable_by(|a, b| {
-            b.started_at_ms
-                .cmp(&a.started_at_ms)
-                .then_with(|| b.id.cmp(&a.id))
-        });
-        records.truncate(MAX_RECORDS);
-        while serde_json::to_vec(&records).map_err(|_| invalid())?.len() > MAX_BYTES {
-            records.pop();
-        }
-
-        match state::put(host, NAMESPACE, KEY, version, &records).await {
-            Ok(_) => return Ok(json!({ "records": records })),
-            Err(error) if error.code == ErrorCode::Conflict => continue,
-            Err(error) => return Err(error),
-        }
-    }
-
-    Err(PluginFault::new(
-        ErrorCode::Conflict,
-        "pelican history version changed",
-    ))
-}
-
-async fn read(host: &HostClient) -> Result<(Vec<Record>, Option<u64>), PluginFault> {
-    let (records, version) = state::get(host, NAMESPACE, KEY).await?;
-    Ok((records.unwrap_or_default(), version))
+    let mut value = serde_json::to_value(record).map_err(|_| invalid())?;
+    value["hasSource"] = json!(has_source);
+    Ok(value)
 }

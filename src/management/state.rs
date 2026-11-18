@@ -1,6 +1,9 @@
 use gateway_plugin_sdk::{
     PluginFault,
-    call::host::{self, StateGetRequest, StateGetResult, StatePutRequest, StatePutResult},
+    call::host::{
+        self, StateDeleteRequest, StateDeleteResult, StateGetRequest, StateGetResult,
+        StatePutRequest, StatePutResult,
+    },
     client::HostClient,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -32,13 +35,31 @@ pub(super) async fn put<T: Serialize + ?Sized>(
     key: &str,
     expected_version: Option<u64>,
     value: &T,
-) -> Result<(), PluginFault> {
+) -> Result<u64, PluginFault> {
     let request = StatePutRequest {
         namespace: namespace.into(),
         key: key.into(),
         expected_version,
         value: serde_json::to_value(value).map_err(|_| invalid())?,
     };
-    callback::<_, StatePutResult>(host, host::STATE_PUT, request).await?;
+    Ok(
+        callback::<_, StatePutResult>(host, host::STATE_PUT, request)
+            .await?
+            .version,
+    )
+}
+
+pub(super) async fn delete(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+    expected_version: u64,
+) -> Result<(), PluginFault> {
+    let request = StateDeleteRequest {
+        namespace: namespace.into(),
+        key: key.into(),
+        expected_version,
+    };
+    callback::<_, StateDeleteResult>(host, host::STATE_DELETE, request).await?;
     Ok(())
 }

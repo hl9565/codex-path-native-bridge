@@ -14,19 +14,27 @@ const KEY: &str = "fixture-key";
 const REQUEST: &str = "gateway-request-123";
 const ACCOUNT: &str = "routed-account";
 const SVG: &str = "<svg viewBox='0 0 12 12'><circle r='2'/></svg>";
+const ARCHIVE: &str = "pelican-archive";
+const INDEX: &str = "pelican-archive-index";
 
 #[derive(Default)]
 struct Fixture {
-    state: BTreeMap<String, (u64, Value)>,
+    state: BTreeMap<(String, String), (u64, Value)>,
     issued_slots: BTreeSet<u64>,
     reject_next_claim: bool,
     reject_generation: bool,
     usage_key_mismatch: bool,
+    data_writes_before_full: Option<usize>,
+    interrupt_publish: bool,
 }
 
 impl Fixture {
     fn plan(&mut self) -> &mut Value {
-        &mut self.state.get_mut("pelican-schedule").unwrap().1
+        &mut self
+            .state
+            .get_mut(&("pelican-schedule".into(), "plan".into()))
+            .unwrap()
+            .1
     }
 
     fn callback(
@@ -38,26 +46,66 @@ impl Fixture {
         let result = match method {
             host::STATE_GET => {
                 assert!(payload.is_empty());
-                let record = self.state.get(params["namespace"].as_str().unwrap());
+                let record = self.state.get(&state_key(&params));
                 json!({ "record": record.map(|(version, value)| json!({
                     "value": value, "version": version, "schema_version": 1,
                 })) })
             }
             host::STATE_PUT => {
                 assert!(payload.is_empty());
-                let namespace = params["namespace"].as_str().unwrap();
-                let previous = self.state.get(namespace).map(|(version, _)| *version);
-                assert_eq!(params["expected_version"].as_u64(), previous);
-                if namespace == "pelican-schedule"
+                let key = state_key(&params);
+                let previous = self.state.get(&key).map(|(version, _)| *version);
+                if params["expected_version"].as_u64() != previous {
+                    return Err(PluginFault::new(
+                        ErrorCode::Conflict,
+                        "state version conflicts",
+                    ));
+                }
+                if key.0 == "pelican-schedule"
                     && params["value"]["pending"].is_object()
                     && std::mem::take(&mut self.reject_next_claim)
                 {
                     return Err(PluginFault::new(ErrorCode::Conflict, "fixture claim lost"));
                 }
+                if key.0 == INDEX
+                    && key.1 == "head"
+                    && params["value"]["pending"].is_null()
+                    && std::mem::take(&mut self.interrupt_publish)
+                {
+                    return Err(PluginFault::new(
+                        ErrorCode::Upstream,
+                        "lost final index write",
+                    ));
+                }
+                if key.0 == ARCHIVE {
+                    assert!(serde_json::to_vec(&params["value"]).unwrap().len() <= 48 * 1024);
+                    if let Some(writes) = self.data_writes_before_full.as_mut() {
+                        if *writes == 0 {
+                            return Err(PluginFault::new(
+                                ErrorCode::Capacity,
+                                "state quota is exhausted",
+                            ));
+                        }
+                        *writes -= 1;
+                    }
+                }
                 let version = previous.unwrap_or(0) + 1;
-                self.state
-                    .insert(namespace.into(), (version, params["value"].clone()));
+                self.state.insert(key, (version, params["value"].clone()));
                 json!({"version": version})
+            }
+            host::STATE_DELETE => {
+                assert!(payload.is_empty());
+                let key = state_key(&params);
+                assert_eq!(key.0, ARCHIVE);
+                assert!(
+                    key.1.contains("-part-"),
+                    "committed records must never be deleted"
+                );
+                assert_eq!(
+                    self.state[&key].0,
+                    params["expected_version"].as_u64().unwrap()
+                );
+                json!({"deleted": self.state.remove(&key).is_some()})
             }
             host::KEYS_LIST => {
                 json!({"keys": [{"id": KEY, "name": "Fixture Key", "enabled": true}], "next_cursor": null})
@@ -194,6 +242,198 @@ fn settings(enabled: bool) -> Value {
         "cron": "* * * * *", "timezone": "UTC"})
 }
 
+fn state_key(params: &Value) -> (String, String) {
+    (
+        params["namespace"].as_str().unwrap().into(),
+        params["key"].as_str().unwrap().into(),
+    )
+}
+
+fn record(id: u32, source: &str) -> Value {
+    json!({
+        "id": format!("{id:032x}"), "startedAtMs": 1_700_000_000_000_u64 + u64::from(id),
+        "model": "fixture-model", "effort": "low", "outcome": "generated", "trigger": "manual",
+        "durationMs": 100, "firstContentMs": 20, "source": source, "sourceOmitted": false,
+    })
+}
+
+#[tokio::test]
+async fn archive_pages_survive_restart_and_open_legacy_and_chunked_source() {
+    let mut host = start().await;
+    let mut fixture = Fixture::default();
+    let legacy_key = ("pelican-history".into(), "recent".into());
+    let mut old = record(0, SVG);
+    old.as_object_mut().unwrap().remove("trigger");
+    let legacy = (1, json!([old]));
+    fixture.state.insert(legacy_key.clone(), legacy.clone());
+
+    let large_source = format!(
+        "<svg><!--{}--></svg>",
+        "\u{9e48}\"\\\n\u{1f}".repeat(25_000)
+    );
+    for id in 1..=130 {
+        let source = if id == 1 { &large_source } else { SVG };
+        assert_eq!(
+            fixture
+                .management(&mut host, "/history", Some(&record(id, source)))
+                .await,
+            (200, json!({"saved": true})),
+            "save {id}",
+        );
+    }
+    let (_, first) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(first["snapshot"], 130);
+    assert_eq!(first["total"], 131);
+    assert_eq!(first["records"].as_array().unwrap().len(), 20);
+    assert_eq!(first["records"][0]["id"], record(130, SVG)["id"]);
+    assert_eq!(first["records"][19]["id"], record(111, SVG)["id"]);
+
+    host.shutdown().await;
+    let mut host = start().await;
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&record(131, SVG)))
+            .await
+            .0,
+        200
+    );
+    let (_, second) = fixture
+        .management(&mut host, "/history?offset=20&snapshot=130", None)
+        .await;
+    assert_eq!(second["total"], 131);
+    assert_eq!(second["records"][0]["id"], record(110, SVG)["id"]);
+    let (_, last) = fixture
+        .management(&mut host, "/history?offset=120&snapshot=130", None)
+        .await;
+    assert_eq!(last["records"].as_array().unwrap().len(), 11);
+    assert_eq!(last["records"][9]["id"], record(1, SVG)["id"]);
+    assert!(last["records"][9]["source"].is_null());
+    assert_eq!(last["records"][9]["hasSource"], true);
+    assert_eq!(last["records"][10]["trigger"], "manual");
+    for (id, source) in [(0, SVG), (1, large_source.as_str())] {
+        let path = format!("/history/record?id={id:032x}");
+        let (status, detail) = fixture.management(&mut host, &path, None).await;
+        assert_eq!(status, 200);
+        assert_eq!(detail["record"]["source"], source);
+    }
+    let mut invalid = record(132, SVG);
+    invalid["apiKey"] = json!("a-placeholder-secret");
+    let before = fixture.state.clone();
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&invalid))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&record(0, "duplicate")))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(fixture.state, before);
+    assert_eq!(fixture.state[&legacy_key], legacy);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn quota_keeps_older_results_and_a_scheduled_save_failure_releases_the_claim() {
+    let mut host = start().await;
+    let mut fixture = Fixture::default();
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&record(1, SVG)))
+            .await
+            .0,
+        200
+    );
+    fixture.data_writes_before_full = Some(1);
+    let big = record(2, &"x".repeat(75_000));
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&big))
+            .await
+            .0,
+        507
+    );
+    let (_, page) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["records"][0]["source"], SVG);
+    assert_eq!(
+        fixture.state.keys().filter(|key| key.0 == ARCHIVE).count(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .management(
+                &mut host,
+                "/history/record?id=00000000000000000000000000000002",
+                None
+            )
+            .await
+            .0,
+        404
+    );
+
+    assert_eq!(
+        fixture
+            .management(&mut host, "/schedule", Some(&settings(true)))
+            .await
+            .0,
+        200
+    );
+    fixture.plan()["armedAfterSlotMs"] = json!(0);
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.issued_slots.len(), 1);
+    let issued = *fixture.issued_slots.first().unwrap();
+    let (_, plan) = fixture.management(&mut host, "/schedule", None).await;
+    assert!(plan["runningSinceMs"].is_null());
+    assert!(plan["nextRunAtMs"].as_u64().unwrap() > issued);
+    assert_eq!(
+        plan["historySaveFailure"],
+        json!({"slotMs": issued, "reason": "full"})
+    );
+    let (_, page_after_schedule) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(page, page_after_schedule);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn retry_after_interrupted_publication_recovers_the_original_without_a_duplicate() {
+    let mut host = start().await;
+    let mut fixture = Fixture {
+        interrupt_publish: true,
+        ..Fixture::default()
+    };
+    let original = record(1, SVG);
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&original))
+            .await
+            .0,
+        502
+    );
+    let (_, unpublished) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(unpublished["total"], 0);
+    host.shutdown().await;
+
+    let mut host = start().await;
+    let replacement = record(1, "payload from another attempt");
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&replacement))
+            .await
+            .0,
+        200
+    );
+    let (_, page) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["records"][0]["source"], SVG);
+    host.shutdown().await;
+}
+
 #[tokio::test]
 async fn history_accepts_only_the_matching_gateway_account() {
     let mut host = start().await;
@@ -204,10 +444,12 @@ async fn history_accepts_only_the_matching_gateway_account() {
         "source": SVG, "sourceOmitted": false, "clientKeyId": KEY, "gatewayRequestId": REQUEST,
         "clientKeyName": "Unverified Label", "accountId": "not-from-host", "accountName": "Not From Host",
     });
-    let (status, data) = fixture
+    let (status, saved) = fixture
         .management(&mut host, "/history", Some(&record))
         .await;
     assert_eq!(status, 200);
+    assert_eq!(saved, json!({"saved": true}));
+    let (_, data) = fixture.management(&mut host, "/history", None).await;
     assert_eq!(data["records"][0]["clientKeyName"], "Fixture Key");
     assert_eq!(data["records"][0]["accountId"], ACCOUNT);
     assert_eq!(data["records"][0]["accountName"], "Routed Fixture Account");
@@ -215,10 +457,11 @@ async fn history_accepts_only_the_matching_gateway_account() {
 
     fixture.usage_key_mismatch = true;
     record["id"] = json!("30000000000000000000000000000000");
-    let (status, data) = fixture
+    let (status, _) = fixture
         .management(&mut host, "/history", Some(&record))
         .await;
     assert_eq!(status, 200);
+    let (_, data) = fixture.management(&mut host, "/history", None).await;
     assert!(data["records"][0]["accountId"].is_null());
     assert!(data["records"][0]["accountName"].is_null());
     assert_eq!(data["records"][0]["clientKeyName"], "Fixture Key");
@@ -337,8 +580,11 @@ async fn rejected_and_abandoned_slots_record_failure_without_replaying() {
     let (_, history) = fixture.management(&mut host, "/history", None).await;
     let records = history["records"].as_array().unwrap();
     assert_eq!(records.len(), 2);
-    assert_eq!(records[1]["issue"], "interrupted");
-    assert_eq!(records[1]["scheduledAtMs"], abandoned);
+    let interrupted = records
+        .iter()
+        .find(|record| record["scheduledAtMs"] == abandoned)
+        .unwrap();
+    assert_eq!(interrupted["issue"], "interrupted");
     assert!(fixture.plan()["pending"].is_null());
     host.shutdown().await;
 }

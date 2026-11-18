@@ -165,24 +165,13 @@ async fn process_registers_only_management_and_maintenance() {
     host.shutdown().await;
 }
 
-async fn history_call(
-    host: &mut Host,
-    input: Option<&Value>,
-    callback: &mut impl FnMut(&str, Value) -> Result<Value, PluginFault>,
-) -> (u16, Value) {
-    management_call(host, "/history", input, &mut |method, params, payload| {
-        assert!(payload.is_empty());
-        callback(method, params).map(|result| (result, Vec::new()))
-    })
-    .await
-}
-
 async fn management_call(
     host: &mut Host,
     path: &str,
     input: Option<&Value>,
     callback: &mut impl FnMut(&str, Value, &[u8]) -> Result<(Value, Vec<u8>), PluginFault>,
 ) -> (u16, Value) {
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
     let (result, payload) = rpc_call(
         host,
         "management.handle",
@@ -190,7 +179,7 @@ async fn management_call(
         json!({
             "method": if input.is_some() { "POST" } else { "GET" },
             "path": path.trim_start_matches('/'),
-            "query": "",
+            "query": query,
             "content_type": input.map(|_| "application/json"),
         }),
         input
@@ -270,84 +259,6 @@ async fn rpc_call(
             other => panic!("unexpected {method} frame {other:?}"),
         }
     }
-}
-
-#[tokio::test]
-async fn management_history_survives_another_write_without_losing_either_record() {
-    let mut host = start().await;
-    let record = |id: &str, start: u64, source: &str| {
-        json!({
-            "id": id, "startedAtMs": start, "model": "fixture-model", "effort": "low",
-            "outcome": "generated", "trigger": "manual", "durationMs": 100, "firstContentMs": 20,
-            "inputTokens": 10, "outputTokens": 12, "cachedTokens": null, "reasoningTokens": null,
-            "source": source, "sourceOmitted": false,
-        })
-    };
-    let older = record(
-        "10000000000000000000000000000000",
-        1_700_000_000_000,
-        "<svg><!-- older --></svg>",
-    );
-    let newer = record(
-        "20000000000000000000000000000000",
-        1_700_000_001_000,
-        "<svg><!-- newer --></svg>",
-    );
-    let mut version = None;
-    let mut saved = json!([]);
-    let mut call_store = |method: &str, params: Value| {
-        assert_eq!(params["namespace"], "pelican-history");
-        assert_eq!(params["key"], "recent");
-        match method {
-            "host.state.get" => Ok(json!({
-                "record": version.map(|version| json!({"value": saved, "version": version, "schema_version": 1})),
-            })),
-            "host.state.put" => {
-                assert_eq!(params["expected_version"].as_u64(), version);
-                if version.is_none() {
-                    version = Some(1);
-                    let mut legacy_record = older.clone();
-                    legacy_record.as_object_mut().unwrap().remove("trigger");
-                    saved = json!([legacy_record]);
-                    Err(PluginFault::new(
-                        ErrorCode::Conflict,
-                        "another tab saved a record",
-                    ))
-                } else {
-                    assert_eq!(version, Some(1), "a duplicate run must not write again");
-                    saved = params["value"].clone();
-                    version = Some(2);
-                    Ok(json!({"version": 2}))
-                }
-            }
-            other => panic!("unexpected history host callback {other}"),
-        }
-    };
-    assert_eq!(
-        history_call(&mut host, None, &mut call_store).await,
-        (200, json!({"records": []}))
-    );
-    let expected = (200, json!({"records": [newer, older]}));
-    assert_eq!(
-        history_call(&mut host, Some(&newer), &mut call_store).await,
-        expected
-    );
-    assert_eq!(
-        history_call(&mut host, Some(&newer), &mut call_store).await,
-        expected
-    );
-    assert_eq!(
-        history_call(&mut host, None, &mut call_store).await,
-        expected
-    );
-    let mut invalid = newer.clone();
-    invalid["apiKey"] = json!("a-placeholder-secret");
-    let (status, _) = history_call(&mut host, Some(&invalid), &mut |_: &str, _: Value| {
-        panic!("invalid records must not reach the state store")
-    })
-    .await;
-    assert_eq!(status, 400);
-    host.shutdown().await;
 }
 
 #[tokio::test]

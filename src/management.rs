@@ -39,6 +39,7 @@ pub(super) fn registration() -> ManagementRegistration {
             route("POST", "models"),
             route("GET", "history"),
             route("POST", "history"),
+            route("GET", "history/record"),
             route("GET", "schedule"),
             route("POST", "schedule"),
             route("POST", "schedule/pause"),
@@ -64,7 +65,8 @@ pub(super) async fn handle(
     let result = match (call.request.method.as_str(), call.request.path.as_str()) {
         ("GET", "bootstrap") => bootstrap(&call).await,
         ("POST", "models") => models(&call).await,
-        ("GET", "history") => history::list(&call.host).await,
+        ("GET", "history") => history::list(&call.host, &call.request.query).await,
+        ("GET", "history/record") => history::detail(&call.host, &call.request.query).await,
         ("POST", "history") => history::save_manual(&call.host, &call.payload).await,
         ("GET", "schedule") => schedule::status(&call.host).await,
         ("POST", "schedule") => schedule::save(&call.host, &call.payload).await,
@@ -75,6 +77,15 @@ pub(super) async fn handle(
         Ok(value) => reply(200, value),
         Err(error) => {
             let (status, message) = match error.code {
+                ErrorCode::Capacity if error.message == history::FULL => {
+                    (507, "生成记录的存储已满，本次结果未保存。")
+                }
+                ErrorCode::InvalidInput if error.message == history::TOO_LARGE => {
+                    (413, "本次结果太大，未保存到生成记录。")
+                }
+                ErrorCode::InvalidInput if error.message == history::MISSING => {
+                    (404, "未找到这条生成记录。")
+                }
                 ErrorCode::InvalidInput => (
                     400,
                     match error.message.as_str() {
