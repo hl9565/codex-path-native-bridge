@@ -2,9 +2,9 @@
   "manifestVersion": 2,
   "publisher": "selfhosted",
   "name": "omp-native-bridge",
-  "displayName": "Codex Path Native Bridge",
-  "version": "0.4.0",
-  "description": "Bridge native Codex paths and run manual or scheduled single-request SVG pelican tests.",
+  "displayName": "Pelican Test",
+  "version": "0.5.0",
+  "description": "Run manual or scheduled single-request SVG pelican tests.",
   "license": "Apache-2.0",
   "engines": {
     "codex-proxy-rs": ">=3.44.0, <4.0.0"
@@ -42,10 +42,6 @@
     },
     "management": {
       "version": 2
-    },
-    "middleware": {
-      "version": 6,
-      "stages": ["http"]
     }
   },
   "configurationSchema": {

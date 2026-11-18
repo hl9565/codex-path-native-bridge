@@ -1,23 +1,10 @@
-# Codex Path Native Bridge
+# Pelican Test
 
-A small [codex-proxy-rs (CPR)](https://github.com/zyycn/codex-proxy-rs) plugin that bridges `/v1/codex/responses` to CPR's native `/v1/responses` endpoint and adds a single-request SVG pelican animation playground. The path bridge changes the path, not the client or protocol.
+A small [codex-proxy-rs (CPR)](https://github.com/zyycn/codex-proxy-rs) plugin for manual and scheduled SVG pelican animation tests. Each test sends one Responses request and records the result, timing, token counts, Client Key and routed account.
 
-## Routing contract
+Starting with `0.5.0`, the plugin runs only its management page and background test scheduler. It no longer registers global HTTP middleware or supplies the `/v1/codex/responses` alias. CPR's native `/v1/responses` endpoint remains available.
 
-Only the exact path `/v1/codex/responses` with uppercase `GET` or `POST` is rewritten to `/v1/responses`:
-
-| Request | Result |
-| --- | --- |
-| `POST /v1/codex/responses` | `POST /v1/responses` (including SSE requests) |
-| `GET /v1/codex/responses` | `GET /v1/responses` (including WebSocket handshakes) |
-| Either path with a query string | Query bytes preserved exactly |
-| Any other path or method | Unchanged |
-
-Absolute URI authority is preserved. The existing request is passed to the SDK's consuming `next` exactly once. Headers, settings, timeout, lazy body handles, responses and upgrades are not changed. No request-body conversion or response-body buffering is added.
-
-CPR owns authentication, client-key access scope, account selection, native Codex protocol handling, SSE streaming, WebSocket sessions, continuation and accounting. This bridge does not implement authentication, a model catalog, an upstream adapter or client-specific tooling. It does not make incompatible clients compatible with CPR's protocol. Clients already using `/v1/responses` do not need this alias.
-
-## Pelican animation page (0.4.0)
+## Pelican animation page
 
 Open **鹈鹕** from the installed plugin's management pages. Select an enabled Client Key, a model visible to that Key, and a reasoning effort (default `low`), then click **开始测试**. One click sends one Responses request; account selection, access rules, quota and accounting remain with CPR. Loading the page reads available Key/model metadata and saved records without generating an animation.
 
@@ -57,14 +44,10 @@ The plugin adds administrator-only `GET /bootstrap` and `POST /models` managemen
 
 ## Compatibility
 
-- Source/package version: `0.4.0`.
-- Declared host contract: manifest schema 2, package RPC protocol 7, `middleware` 6 on the `http` stage, `management` 2 and `maintenance` 1. This version targets `>=3.44.0, <4.0.0`, using the pinned `v3.44.0` page bridge and host callbacks. `<4.0.0` marks a new major contract to evaluate. The package is not compatible with the RPC v6 packages released as `0.2.x`, nor with the older RPC used by `0.1.x`.
-- CPR `3.34.0` and later check the manifest schema version, the package protocol version, every declared capability version and the host range independently, against the contract each host publishes in `backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json`. A host that publishes this package's declarations accepts and starts it regardless of its minor version. A host that does not reports the specific mismatch at install, version planning and startup, and an administrator's per-start risk confirmation does not survive a host restart. The bridge itself contains no host-version check.
-- Supported is not the same as live-tested. The previous `0.3.x` path-only source line was observed running on CPR releases through `3.44.0`; the `0.3.12` contract review also covered `3.45.0` and `3.45.1`. Those historical observations do not verify the new `0.4.0` management page or its generation flow; see [Verification](#verification).
-- Official SDK and packaging CLI pinned to CPR revision `c622f085748f812936a7371fcc85d1621fa72ca8` (`v3.44.0`). The pin records the SDK and package contract this source is built against, not the newest host release, so a host-only update does not move it. The `v3.44.0` SDK delta was additive (`HostClient::proxy_http`, `HostClient::list_proxies` and their wire types), left the frame codecs, session driver, middleware call types and `PluginBuilder` unchanged, and this package calls none of the new functions.
-- Host-only updates: after upgrading CPR within the declared range, verify the installed package on the new host (reported enabled/running, `compatibilityWarning` null, `loadError` null, configuration and middleware binding intact) and keep it. Do not publish, rebuild or reinstall a bridge package for a host version change alone. A new bridge release is warranted only by a bridge implementation or dependency change, a change to the host contract this package declares, or a host that stops accepting it.
-- A `0.3.4` package declares `<3.38.0`, a `0.3.5` package declares `<3.39.0`, a `0.3.6` package declares `<3.40.0`, a `0.3.7` package declares `<3.41.0`, a `0.3.8` package declares `<3.42.0`, a `0.3.9` package declares `<3.43.0`, a `0.3.10` package declares `<3.44.0` and a `0.3.11` package declares `<3.45.0`, so each stays unstarted after an upgrade past its range; use `0.3.12` on CPR `3.33.x` and later `3.x` releases that publish the declared contract.
-- Stable plugin ID: `selfhosted.omp-native-bridge`. The legacy machine name is retained for identity continuity; it does not restrict the plugin to one client.
+- Source/package version: `0.5.0`.
+- Requires CPR `>=3.44.0, <4.0.0` with manifest schema 2, RPC protocol 7, `management` 2, and `maintenance` 1. CPR checks the declared contract at install, version planning and startup.
+- The official SDK and packaging CLI are pinned to CPR revision `c622f085748f812936a7371fcc85d1621fa72ca8` (`v3.44.0`). After a host upgrade within the range, check that the plugin still runs and the Pelican page opens.
+- Stable plugin ID: `selfhosted.omp-native-bridge`. The legacy ID and state namespaces are retained so an existing instance can keep its saved runs and schedule.
 
 The public release repository is [hl9565/codex-path-native-bridge](https://github.com/hl9565/codex-path-native-bridge). The Rust package/binary keeps its existing name, `cpr-omp-native-bridge`.
 
@@ -90,27 +73,28 @@ An explicit target requires its Rust target components and a suitable linker/too
 
 ## Install in CPR
 
-1. In CPR's **Plugin Management**, choose **GitHub** and enter `hl9565/codex-path-native-bridge`. Set the tag to `v0.4.0` for the Pelican page, keep download authentication set to none, and use the SHA-256 published with the Linux x86_64 archive. A `0.3.x` package contains only the path bridge.
-2. Alternatively, build a package for the host platform and choose **uploaded package** to install the archive from `dist/`.
-3. Review the publisher, name, version, target platform and digest. Confirm installation only if you trust the code and its source.
-4. Confirm the configuration is enabled and published. This plugin has no configuration parameters or secrets. For an existing installation, review and confirm the switch to the new package version rather than assuming upload alone changes the active version.
-5. Use a compatible client's normal CPR credentials and endpoint settings so its requests reach `/v1/codex/responses` on the gateway. Existing CPR access rules still apply.
+1. In CPR's **Plugin Management**, choose **GitHub**, enter `hl9565/codex-path-native-bridge`, and set the tag to `v0.5.0`. Keep download authentication set to none and select the Linux x86_64 archive. For a local build, choose **上传包** and select the archive from `dist/`.
+2. Review the version, target platform and SHA-256 before installing.
+3. When upgrading `0.4.0`, switch the existing instance to `0.5.0` so its history and schedule carry over. CPR's version plan drops the old HTTP binding. Clients relying on the former alias need to use CPR's native `/v1/responses` endpoint.
+4. Open **鹈鹕** from the enabled instance. Its management page uses existing CPR Client Keys and models; no plugin credentials are required.
 
 ### Trust and failure scope
 
 CPR plugins run as trusted processes with the gateway's system identity. They can access its data, credentials, configuration and network; CPR does not provide a plugin security sandbox. Package/digest/compatibility checks do not prove code safety.
 
-This plugin contributes **global HTTP middleware**, before routing and authentication. Its path rewrite is narrow, but its process participates in the middleware chain for other HTTP routes too. Runtime/framework failures can therefore affect unrelated requests according to CPR's configured reject/delegate failure policy. Client-key or model scope is not a sandbox around this HTTP contribution.
-
-The implementation does not itself read or store credentials. It still receives the HTTP request, including its headers, through the trusted middleware contract. Do not disable it while clients depend on the alias: disabling it removes this path rewrite, not CPR's native endpoint.
+Since `0.5.0`, ordinary gateway traffic does not enter the plugin. Its calls on the CPR runtime panel are from plugin management and maintenance.
 
 ## Verification
 
-Run `node --test tests/pelican-page.test.mjs tests/pelican-server.test.mjs` (or `make web-test`) to check the page and loopback service with mock responses and credentials. This covers single-request behavior, request ID attribution, history reopening, schedule settings and pause, connection/stream behavior and the loopback route restrictions. Run `cargo test --locked` to check the routing, Cron/time zone behavior and the real plugin process against a simulated CPR host. The process tests exercise identity reconciliation, durable claims, repeated maintenance callbacks, failure records and pause. The standalone page was exercised with a live CPR response before history was added; the records for `0.3.x` below describe older releases.
+Run `node --test tests/pelican-page.test.mjs tests/pelican-server.test.mjs` (or `make web-test`) to check the page and loopback service with mock responses and credentials. Run `cargo test --locked` to verify that the compiled plugin registers only management and maintenance, and exercise identity reconciliation, durable claims, repeated maintenance callbacks, failure records and pause.
+
+The Linux x86_64 `0.5.0` package was verified on an isolated CPR `3.44.0` host by switching an existing `0.4.0` instance in place. CPR dropped the HTTP binding and retained the saved history and plan. A manual run and a scheduled run completed against a loopback fixture after the switch, and the scheduled plan was paused successfully.
+
+### Historical bridge releases
 
 The Linux x86_64 `0.4.0` package was verified, uploaded, and activated on an isolated CPR `3.44.0` host. With a loopback fixture upstream, one manual and one background run both produced an SVG and resolved to the routed account and selected Key. The scheduled run saved tokens and source without a browser page, and pausing cleared the next run. No online gateway or real model credentials were used.
 
-The three deterministic routing tests cover:
+The former path bridge tests covered:
 
 - `GET`/`POST` rewriting with exact query and authority preservation;
 - unchanged unrelated paths and URI forms;
@@ -156,8 +140,6 @@ The host was then upgraded in place from CPR `3.34.0` to `3.35.1` (`ghcr.io/zyyc
 
 The `0.3.3` artifact was installed on the running CPR `3.35.1` instance through the same native GitHub flow and then carried across a host upgrade to CPR `3.36.0`. Verify returned `200` and install `201` with `actualArtifactSha256` `a2c23079…`, version plan `200` with `compatibilityWarning` null and the existing empty configuration and `reject` middleware binding intact, and version switch `200` to instance revision 123; the instance reported enabled/running with no compatibility warning, no load error, no API deprecation and revision 107 draining. The compose image was then moved from the `3.35.1` tag to the `ghcr.io/zyycn/codex-proxy-rs:3.36.0` version tag, which resolves to `sha256:7cc0c08e…`, and the service recreated, which was the only change: the container kept `nofile` `65536`/`524288`, `pids_limit` 256, the `127.0.0.1:8080` binding, the `10001:10001` user and the data, log and `config.yaml` mounts, and the PostgreSQL and Redis containers were not recreated. The host reported healthy (`204` healthz, `200` health) well before the start period elapsed, and the plugin came back enabled/running on revision 123 and the same artifact with `compatibilityWarning` null, `loadError` null, no API deprecation and no draining revisions, which is the case a `0.3.2` package (<3.36.0) would fail after the upgrade. `POST /v1/responses` and `POST /v1/codex/responses` both returned the same native `401` body, and `GET` on both returned the same native `400` WebSocket-upgrade rejection, so the rewrite still passes native responses through. No model requests were made here either, so authenticated SSE, WebSocket and continuation behavior was not exercised by this deployment check.
 
-For your own installation, verify that authentication still applies, then exercise the client's SSE and WebSocket transports and a continuation turn. A successful upload or an enabled status alone is not evidence of end-to-end client compatibility.
-
 ## License
 
 This project's source is licensed under [Apache License 2.0](LICENSE).
@@ -165,6 +147,10 @@ This project's source is licensed under [Apache License 2.0](LICENSE).
 It depends on CPR's official `gateway-plugin-sdk`, which inherits `Apache-2.0` from the [pinned upstream workspace](https://github.com/zyycn/codex-proxy-rs/blob/c622f085748f812936a7371fcc85d1621fa72ca8/backend/Cargo.toml). The pinned upstream root contains no `NOTICE` file. Dependencies remain under their respective licenses; this project's license does not relicense them. Binary redistributors must also satisfy the licenses of the dependencies they distribute.
 
 ## Changes
+
+### 0.5.0
+
+Rename the display name to **Pelican Test**. Remove the global HTTP middleware and its path alias, keeping the same plugin ID, history and schedule state, and manual and scheduled test behavior.
 
 ### 0.4.0
 

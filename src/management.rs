@@ -131,7 +131,7 @@ async fn list_models(host: &HostClient, key: &str) -> Result<Vec<String>, Plugin
     let request = ModelListRequest {
         client_key_id: key.into(),
         protocol: "openai".into(),
-        client_version: "codex-path-native-bridge/0.4.0".into(),
+        client_version: concat!("pelican-test/", env!("CARGO_PKG_VERSION")).into(),
     };
     let result: ModelListResult = callback(host, host::MODELS_LIST, request).await?;
     Ok(result.models)

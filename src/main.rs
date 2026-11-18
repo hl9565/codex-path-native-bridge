@@ -1,9 +1,8 @@
 mod management;
-mod path;
 
 use gateway_plugin_sdk::Manifest;
 use gateway_plugin_sdk::client::{
-    HttpCall, PluginBuilder, PluginSession, SessionConfig, SessionError, methods,
+    PluginBuilder, PluginSession, SessionConfig, SessionError, methods,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -28,13 +27,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plugin = PluginBuilder::from_manifest(manifest)?
         .management(management::registration(), management::handle)?
         .on(methods::RECONCILE, management::reconcile)?
-        .middleware(|call: HttpCall| async move {
-            let HttpCall {
-                mut request, next, ..
-            } = call;
-            path::rewrite(&request.method, &mut request.uri);
-            next.run(request).await
-        })?
         .build()?;
     session.run(plugin).await?;
     Ok(())
