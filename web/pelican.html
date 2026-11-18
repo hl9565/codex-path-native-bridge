@@ -70,6 +70,13 @@
     .connection-dot.online { background: var(--green); box-shadow: 0 0 0 3px #149b7410; }
     .notice { font-size: 12px; margin: 13px 1px 0; padding: 10px 14px; border-radius: 10px; background: #fff8e9; color: #92682d; border: 1px solid #f3e2bd; overflow-wrap: anywhere; }
     [data-theme="dark"] .notice { background: #392f20; color: #e7c17e; border-color: #65502d; }
+    .refine { margin-top: 18px; padding: 14px 22px; }
+    .refine-top, .refine-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .refine-top { justify-content: space-between; }
+    .refine-description, .refine-status, .refine-error { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .refine-status { margin-top: 8px; }
+    .refine-actions { margin-top: 6px; }
+    .refine-error { color: var(--ink); }
     .schedule { margin-top: 18px; }
     .schedule-summary { display: flex; align-items: center; gap: 10px; min-height: 55px; padding: 12px 22px; list-style: none; cursor: pointer; }
     .schedule-summary::-webkit-details-marker { display: none; }
@@ -170,6 +177,9 @@
     .dialog-source { padding: 18px; background: var(--stage); overflow: auto; }
     .dialog-footer { padding: 9px 18px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
     .dialog-copy-status { color: var(--blue-ink); margin-left: 8px; }
+    .dialog-rounds { margin-top: 8px; }
+    .dialog-rounds summary { cursor: pointer; }
+    .dialog-rounds ol { margin: 5px 0 0; padding-left: 22px; max-height: 7rem; overflow: auto; }
     @media (max-width: 900px) {
       body { padding: 16px; }
       .controls { grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr); gap: 14px; padding: 20px; }
@@ -195,6 +205,7 @@
       .result-header { align-items: flex-start; flex-direction: column; gap: 12px; }
       .result-toolbar { width: 100%; justify-content: space-between; }
       .history-heading { padding: 14px; }
+      .refine { padding: 12px 14px; }
       .schedule-summary { padding: 10px 14px; }
       .schedule-form { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px; gap: 12px; }
       .history-table, .history-table tbody { display: block; }
@@ -270,9 +281,26 @@
     <div class="field"><label for="model">模型</label><select id="model" disabled><option value="">连接后读取可用模型</option></select></div>
     <div class="field"><label for="effort">推理强度</label><select id="effort"><option value="auto">自动</option><option value="none">none</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
     <div class="run-field"><button id="run" class="primary-button" type="button" disabled><svg class="icon"><use href="#i-play"/></svg><span id="run-label">开始测试</span></button></div>
-    <div class="control-footer"><span class="inline"><svg class="icon"><use href="#i-spark"/></svg>每次只发送 1 个生成请求</span><span id="connection"><span class="connection-dot"></span>等待连接 CPR</span></div>
+    <div class="control-footer"><span class="inline"><svg class="icon"><use href="#i-spark"/></svg>单次测试发送 1 个生成请求</span><span id="connection"><span class="connection-dot"></span>等待连接 CPR</span></div>
   </section>
   <div class="notice" id="notice" role="status" hidden></div>
+
+  <section class="panel refine" id="refine-panel" aria-labelledby="refine-title" hidden>
+    <div class="refine-top">
+      <div>
+        <div class="card-title"><h2 id="refine-title">多轮打磨</h2></div>
+        <p class="refine-description">使用上方选定的 Key、模型和推理强度。先出初稿，再评审和按需修改，最多调用模型 <span id="refine-max-rounds">3</span> 次。关掉页面后 CPR 会继续处理。</p>
+      </div>
+      <button id="refine-start" class="connection-button" type="button" disabled>开始多轮打磨</button>
+    </div>
+    <p id="refine-status" class="refine-status" role="status">正在读取任务…</p>
+    <p id="refine-error" class="refine-error" role="status" hidden></p>
+    <div id="refine-actions" class="refine-actions" hidden>
+      <button id="refine-stop" class="connection-button" type="button" hidden>停止后续轮次</button>
+      <button id="refine-first" class="record-link" type="button" hidden>看初稿</button>
+      <button id="refine-latest" class="record-link" type="button" hidden>看当前稿</button>
+    </div>
+  </section>
 
   <details class="panel schedule" id="schedule-panel" hidden>
     <summary class="schedule-summary"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span class="schedule-title">定时测试</span><span id="schedule-state" class="schedule-chip">读取中</span></summary>
@@ -336,7 +364,7 @@
       <button id="history-next" class="record-link" type="button">下一页</button>
     </nav>
   </section>
-  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.6.0</span></span><span>单次生成 · 点击缩略图放大</span></footer>
+  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.7.0</span></span><span>点击缩略图放大</span></footer>
 </main>
 <dialog id="preview-dialog" aria-labelledby="dialog-title">
   <div class="dialog-header">
@@ -355,7 +383,9 @@
   </div>
   <div id="dialog-frame" class="dialog-frame"></div>
   <div id="dialog-source-panel" class="dialog-source" hidden><pre id="dialog-source" class="source" tabindex="0"></pre></div>
-  <div class="dialog-footer"><span id="dialog-stats"></span><span id="dialog-copy-status" class="dialog-copy-status" role="status"></span></div>
+  <div class="dialog-footer"><span id="dialog-stats"></span><span id="dialog-copy-status" class="dialog-copy-status" role="status"></span>
+    <details id="dialog-rounds" class="dialog-rounds" hidden><summary>各轮耗时和用量</summary><ol id="dialog-round-list"></ol></details>
+  </div>
 </dialog>
 <dialog id="connection-dialog" aria-label="连接网关">
   <div class="dialog-header"><span>连接你的 CPR 网关</span><button id="close-connection" class="icon-button" type="button" aria-label="关闭连接设置"><svg class="icon"><use href="#i-close"/></svg></button></div>
@@ -384,8 +414,21 @@
   };
   const issues = {
     interrupted: '宿主中断，未重跑', timeout: '等待模型超时',
-    key_unavailable: 'Key 不可用或无访问权限', model_failed: '模型调用失败', output_limit: '输出超过大小上限',
+    key_unavailable: 'Key 不可用或无法授权', model_failed: '模型调用失败', output_limit: '输出超过大小限制',
+    review_invalid: '评审没有返回有效的修改或确认',
   };
+  const refineEnds = {
+    accepted: '评审通过', limit_reached: '已达到轮次上限', draft_failed: '没有生成完整初稿',
+    review_failed: '评审失败，已保留上一份可用稿', interrupted: '任务中断，未重试', stopped: '已停止后续轮次',
+  };
+  const refineActions = {
+    drafted: '生成初稿', revised: '修改稿件', accepted: '确认稿件', failed: '本轮未完成', interrupted: '调用中断',
+  };
+  const refineArchives = {
+    saved: '已存入生成记录', full: '生成记录的存储已满，未保存',
+    too_large: '结果超过保存上限，未保存', unconfirmed: '无法确认是否已保存到生成记录',
+  };
+  const refineId = /^refine-[a-f\d]{32}$/i;
   const $ = id => document.getElementById(id);
   const bridge = window.codexProxyPlugin;
   const encoder = new TextEncoder();
@@ -421,6 +464,12 @@
   let scheduleDirty = false;
   let scheduleMessage = '';
   let scheduleError = false;
+  let refinement = null;
+  let refineVersion = 0;
+  let refineReading = false;
+  let refineReadFailed = false;
+  let refineBusy = false;
+  let refineMessage = '';
 
   function notice(message = '') {
     $('notice').textContent = message;
@@ -466,6 +515,7 @@
     $('run').classList.toggle('is-running', busy);
     $('run').querySelector('use').setAttribute('href', busy ? '#i-stop' : '#i-play');
     $('run-label').textContent = busy ? '停止生成' : '开始测试';
+    if (bridge) renderRefinement();
   }
 
   async function request(method, path, body, query) {
@@ -484,6 +534,126 @@
       throw error;
     }
     return value;
+  }
+
+  function renderRefinement() {
+    const job = refinement?.job;
+    const active = Boolean(job && job.status !== 'done');
+    const max = refinement?.maxRounds || 3;
+    $('refine-max-rounds').textContent = String(max);
+    $('refine-start').disabled = !refinement || refineReadFailed || active || refineBusy || Boolean(controller)
+      || catalogLoading || !$('key').value || !$('model').value;
+    $('refine-stop').hidden = !['queued', 'running'].includes(job?.status) || job.stopRequested;
+    $('refine-stop').disabled = refineBusy;
+    $('refine-first').hidden = !job?.hasComparison;
+    $('refine-latest').hidden = !job?.hasDraft;
+    $('refine-first').disabled = $('refine-latest').disabled = refineBusy;
+    $('refine-latest').textContent = job?.status === 'done' ? '看最终稿' : '看当前稿';
+    $('refine-actions').hidden = !job || ($('refine-stop').hidden && $('refine-latest').hidden);
+    const summary = $('refine-status');
+    let progress = '正在读取任务…';
+    if (job) {
+      const phase = job.status === 'running' ? '第 ' + (job.rounds + 1) + ' 轮：' + (job.rounds ? '正在评审' : '正在生成初稿')
+        : job.status === 'queued' ? '等待 CPR 后台处理（定时测试优先）'
+          : job.status === 'saving' ? '正在保存结果' : refineEnds[job.end] || '已结束';
+      progress = [job.model, phase, '已记录 ' + job.rounds + ' / ' + max + ' 轮',
+        job.stopRequested && active && '已请求停止，本轮如已开始会继续完成',
+        job.status === 'done' && refineArchives[job.archive],
+        job.status === 'done' && job.archive !== 'saved' && job.hasDraft && '可打开最终稿复制 HTML，临时稿只保留到下次任务',
+      ].filter(Boolean).join(' · ');
+    } else if (refinement) {
+      progress = '还没有多轮打磨任务。';
+    } else if (refineReadFailed) {
+      progress = '暂时无法读取多轮打磨任务。';
+    }
+    if (summary.textContent !== progress) summary.textContent = progress;
+    const message = refineMessage || (refineReadFailed && job ? '进度暂未更新，页面会自动重连。' : '');
+    const error = $('refine-error');
+    if (error.textContent !== message) error.textContent = message;
+    error.hidden = !message;
+  }
+
+  function applyRefinement(snapshot) {
+    if (!snapshot || !Number.isSafeInteger(snapshot.maxRounds) || snapshot.maxRounds < 1
+      || (snapshot.job !== null && !refineId.test(snapshot.job?.id))) throw new Error('无法读取多轮任务数据，请刷新页面。');
+    const prior = refinement?.job;
+    refinement = snapshot;
+    const job = snapshot.job;
+    if (job?.archive === 'saved' && (prior?.archive !== 'saved' || prior.id !== job.id)
+      && !historyOffset && !historyPaging) {
+      historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
+    }
+  }
+
+  async function refreshRefinement() {
+    if (closed || refineReading || refineBusy) return;
+    refineReading = true;
+    const version = refineVersion;
+    try {
+      const snapshot = await request('GET', '/refine');
+      if (!closed && version === refineVersion) {
+        applyRefinement(snapshot);
+        refineReadFailed = false;
+      }
+    } catch {
+      if (version === refineVersion) refineReadFailed = true;
+    } finally {
+      refineReading = false;
+      if (!closed) renderRefinement();
+    }
+  }
+
+  async function changeRefinement(path, body) {
+    refineBusy = true;
+    refineVersion++;
+    refineMessage = '';
+    renderRefinement();
+    let refresh = false;
+    try {
+      const snapshot = await request('POST', path, body);
+      if (closed) return;
+      applyRefinement(snapshot);
+      refineReadFailed = false;
+    } catch (error) {
+      if (!closed) {
+        refineMessage = error.message || '操作没有确认，请查看最新任务状态。';
+        refresh = true;
+      }
+    } finally {
+      refineBusy = false;
+      if (!closed) renderRefinement();
+    }
+    if (refresh) await refreshRefinement();
+  }
+
+  function startRefinement() {
+    if ($('refine-start').disabled) return;
+    return changeRefinement('/refine', {
+      id: 'refine-' + runId(), clientKeyId: $('key').value, model: $('model').value, effort: $('effort').value,
+    });
+  }
+
+  function stopRefinement() {
+    if ($('refine-stop').hidden || refineBusy) return;
+    return changeRefinement('/refine/stop', { id: refinement.job.id });
+  }
+
+  async function openRefinementDraft(version) {
+    const job = refinement?.job;
+    if (!job?.hasDraft || refineBusy) return;
+    const intent = ++openIntent;
+    try {
+      const { record } = await request('GET', '/refine/draft', undefined, 'id=' + job.id + '&version=' + version);
+      if (closed || intent !== openIntent) return;
+      if (!validRecord(record) || record.id !== job.id || !record.source) throw new Error('暂时无法打开这份稿件。');
+      refineMessage = '';
+      renderRefinement();
+      return openRecord(record, true, version === 'first' ? '初稿' : job.status === 'done' ? '最终稿' : '当前稿');
+    } catch (error) {
+      if (closed || intent !== openIntent) return;
+      refineMessage = error.message || '暂时无法打开这份稿件，请刷新后重试。';
+      renderRefinement();
+    }
   }
 
   async function loadModels(currentEpoch) {
@@ -722,7 +892,8 @@
     return record && typeof record.id === 'string'
       && (record.trigger === 'scheduled'
         ? Number.isSafeInteger(record.scheduledAtMs) && record.id === 'scheduled-' + record.scheduledAtMs
-        : (record.trigger === 'manual' || record.trigger === undefined) && /^[a-f\d]{32}$/i.test(record.id))
+        : record.trigger === 'refined' ? refineId.test(record.id)
+          : (record.trigger === 'manual' || record.trigger === undefined) && /^[a-f\d]{32}$/i.test(record.id))
       && Number.isSafeInteger(record.startedAtMs) && record.startedAtMs >= 0 && record.startedAtMs <= 8640000000000000
       && typeof record.model === 'string' && typeof record.effort === 'string' && Object.hasOwn(outcomes, record.outcome)
       && (record.source === null || (typeof record.source === 'string' && record.source.length <= MAX_TEXT));
@@ -743,6 +914,10 @@
 
   function identityLabel(name, id) {
     return [name, id].find(value => typeof value === 'string' && value.length > 0 && value.length <= 512) || '未知';
+  }
+
+  function triggerLabel(record) {
+    return record.trigger === 'scheduled' ? '定时' : record.trigger === 'refined' ? '多轮打磨' : '手动';
   }
 
   function renderHistory() {
@@ -774,8 +949,7 @@
     const date = new Date(record.startedAtMs);
     const time = element('time', 'record-primary', date.toLocaleDateString('zh-CN'));
     time.dateTime = date.toISOString();
-    const trigger = record.trigger === 'scheduled' ? '定时' : '手动';
-    cells[0].append(time, element('span', 'record-secondary', date.toLocaleTimeString('zh-CN') + ' · ' + trigger));
+    cells[0].append(time, element('span', 'record-secondary', date.toLocaleTimeString('zh-CN') + ' · ' + triggerLabel(record)));
     cells[1].append(element('span', 'record-primary', record.model),
       element('span', 'record-secondary', '推理强度 ' + (record.effort === 'auto' ? '自动' : record.effort)));
     cells[2].append(
@@ -789,11 +963,15 @@
     cells[3].append(element('span', 'status ' + kind, label),
       element('span', 'record-secondary record-timing', duration === '—' ? '—' : duration + ' s'));
     if (Object.hasOwn(issues, record.issue)) cells[3].append(element('span', 'record-secondary', issues[record.issue]));
+    if (Array.isArray(record.refinement?.rounds)) {
+      cells[3].append(element('span', 'record-secondary',
+        record.refinement.rounds.length + ' 轮 · ' + (refineEnds[record.refinement.end] || '已结束')));
+    }
     cells[4].append(element('div', 'record-primary record-tokens', '入 ' + count(record.inputTokens) + ' / 出 ' + count(record.outputTokens)),
       element('span', 'record-secondary record-tokens', '缓存 ' + count(record.cachedTokens) + ' · 推理 ' + count(record.reasoningTokens)));
 
     const source = record.source;
-    if (!source && !record.hasSource) {
+    if (!source && !record.hasSource && !record.refinement) {
       cells[5].append(element('span', 'record-secondary', record.sourceOmitted ? '源码超出保存上限' : '—'));
       return row;
     }
@@ -819,9 +997,9 @@
       button.addEventListener('click', () => openRecord(record, true));
       actions.append(button);
     }
-    const sourceButton = element('button', 'record-link', '源码');
+    const sourceButton = element('button', 'record-link', source || record.hasSource ? '源码' : '轮次');
     sourceButton.type = 'button';
-    sourceButton.setAttribute('aria-label', '查看 ' + record.model + ' 的 HTML 源码');
+    sourceButton.setAttribute('aria-label', '查看 ' + record.model + (source || record.hasSource ? ' 的 HTML 源码' : ' 的生成轮次'));
     sourceButton.addEventListener('click', () => openRecord(record, false));
     actions.append(sourceButton);
     cells[5].append(actions);
@@ -879,11 +1057,15 @@
     }));
   }
 
+  function runId() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
+  }
+
   function rememberRun(outcome) {
     const numeric = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
     const model = (state.actualModel || state.model).replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, 120).trim();
     const record = {
-      id: Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join(''),
+      id: runId(),
       startedAtMs: state.date.getTime(),
       model: model || state.model, effort: state.effort, outcome, trigger: 'manual',
       ...(state.keyName ? { clientKeyName: state.keyName } : {}),
@@ -1156,7 +1338,19 @@
     }
   }
 
-  async function openRecord(record, preferAnimation) {
+  function renderRounds(refinement) {
+    const rounds = Array.isArray(refinement?.rounds) ? refinement.rounds : [];
+    $('dialog-rounds').hidden = !rounds.length;
+    $('dialog-rounds').open = false;
+    $('dialog-round-list').replaceChildren(...rounds.map(round => element('li', '', [
+      refineActions[round.action], round.model, '耗时 ' + seconds(round.durationMs) + ' s',
+      '首个内容 ' + seconds(round.firstContentMs) + ' s',
+      '输入 ' + count(round.inputTokens), '输出 ' + count(round.outputTokens),
+      '缓存 ' + count(round.cachedTokens), '推理 ' + count(round.reasoningTokens), issues[round.issue],
+    ].filter(Boolean).join(' · '))));
+  }
+
+  async function openRecord(record, preferAnimation, draftLabel = '') {
     const intent = ++openIntent;
     let source = record.source;
     if (!source && record.hasSource && bridge) {
@@ -1172,21 +1366,24 @@
         return;
       }
     }
-    if (!source || closed || intent !== openIntent) return;
-    const html = extractDocument(source);
-    openedRecord = { source, html, startedAtMs: record.startedAtMs };
+    if ((!source && !record.refinement) || closed || intent !== openIntent) return;
+    const html = source ? extractDocument(source) : '';
+    openedRecord = { source, html, startedAtMs: record.startedAtMs, draftLabel };
     $('dialog-meta').textContent = [record.model, record.effort, new Date(record.startedAtMs).toLocaleString('zh-CN'),
-      record.trigger === 'scheduled' ? '定时' : '手动',
+      triggerLabel(record),
       'Key ' + identityLabel(record.clientKeyName, record.clientKeyId),
       '上游 ' + identityLabel(record.accountName, record.accountId)].join(' · ');
     $('dialog-stats').textContent = [
       outcomes[record.outcome][0], '耗时 ' + seconds(record.durationMs) + ' s', '首个内容 ' + seconds(record.firstContentMs) + ' s',
       '输入 ' + count(record.inputTokens), '输出 ' + count(record.outputTokens),
       '缓存 ' + count(record.cachedTokens), '推理 ' + count(record.reasoningTokens),
-    ].join(' · ');
+      refineEnds[record.refinement?.end],
+    ].filter(Boolean).join(' · ');
+    renderRounds(record.refinement);
     $('dialog-copy-status').textContent = '';
-    $('dialog-source').textContent = source;
+    $('dialog-source').textContent = source || '本次没有可查看的 HTML 源码。';
     $('dialog-preview').disabled = !html;
+    $('copy').disabled = !source;
     $('download').disabled = !html;
     recordView(preferAnimation);
     $('preview-dialog').showModal();
@@ -1195,7 +1392,9 @@
   function recordView(preferAnimation) {
     if (!openedRecord) return;
     const animation = Boolean(preferAnimation && openedRecord.html);
-    $('dialog-title').textContent = animation ? '鹈鹕动画大图' : '生成记录 · HTML 源码';
+    const label = openedRecord.draftLabel;
+    $('dialog-title').textContent = label ? label + (animation ? ' · 预览' : ' · HTML 源码')
+      : animation ? '鹈鹕动画大图' : openedRecord.source ? '生成记录 · HTML 源码' : '生成记录 · 轮次';
     $('dialog-preview').setAttribute('aria-pressed', String(animation));
     $('dialog-source-button').setAttribute('aria-pressed', String(!animation));
     $('dialog-source-panel').hidden = animation;
@@ -1408,7 +1607,7 @@
   $('history-next').addEventListener('click', () => changeHistoryPage(historyOffset + PAGE_SIZE));
   $('refresh').addEventListener('click', async () => {
     historyTask = historyTask.then(() => loadHistory(0));
-    await initialize();
+    await Promise.all([initialize(), bridge ? refreshRefinement() : undefined]);
   });
   $('connect').addEventListener('click', () => $('connection-dialog').showModal());
   $('close-connection').addEventListener('click', () => $('connection-dialog').close());
@@ -1416,6 +1615,11 @@
   $('key').addEventListener('change', () => { notice(); loadModels(++epoch); });
   $('model').addEventListener('change', controls);
   if (bridge) {
+    $('refine-panel').hidden = false;
+    $('refine-start').addEventListener('click', startRefinement);
+    $('refine-stop').addEventListener('click', stopRefinement);
+    $('refine-first').addEventListener('click', () => openRefinementDraft('first'));
+    $('refine-latest').addEventListener('click', () => openRefinementDraft('latest'));
     $('schedule-panel').hidden = false;
     $('schedule-key').addEventListener('change', () => {
       scheduleDirty = true;
@@ -1465,16 +1669,24 @@
       historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
     }
     void refreshSchedule();
+    if (!refinement?.job || refinement.job.status === 'done') void refreshRefinement();
   }, 30000) : 0;
+  const refinePoll = bridge ? setInterval(() => {
+    if (!closed && !document.hidden && (refineReadFailed || (refinement?.job && refinement.job.status !== 'done'))) {
+      return refreshRefinement();
+    }
+  }, 4000) : 0;
   window.addEventListener('pagehide', () => {
     closed = true;
     controller?.abort();
     clearInterval(elapsedTimer);
     clearInterval(poll);
+    clearInterval(refinePoll);
     cancelAnimationFrame(renderFrame);
   }, { once: true });
   theme();
   historyTask = loadHistory();
+  if (bridge) void refreshRefinement();
   initialize();
 })();
 </script>

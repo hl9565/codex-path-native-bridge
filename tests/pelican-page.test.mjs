@@ -76,20 +76,28 @@ async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = st
     createTextNode: text => text,
   };
   let timestamp = 1_700_000_000_000;
+  let timerId = 0;
+  const timers = new Map();
+  const windowHandlers = new Map();
   const context = {
     document, location: { protocol: proxy ? 'http:' : 'file:', hostname: proxy ? '127.0.0.1' : '', origin: proxy ? 'http://127.0.0.1:3217' : 'null' },
-    window: { codexProxyPlugin: bridge, localStorage, addEventListener() {} },
+    window: { codexProxyPlugin: bridge, localStorage, addEventListener: (name, callback) => windowHandlers.set(name, callback) },
     crypto: webcrypto,
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [timestamp += 1_000])); } },
     Option: class { constructor(text, value) { this.text = this.textContent = text; this.value = value; this.isOption = true; } },
     fetch: fetchImpl ?? (() => { throw new Error('Unexpected network request'); }),
     navigator: {}, performance, Intl, URL, Headers, Response, Blob, TextDecoder, TextEncoder, AbortController, AbortSignal, DOMException, TypeError,
-    setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+    setTimeout: () => 0, clearTimeout() {},
+    setInterval(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
+    clearInterval: id => timers.delete(id),
     requestAnimationFrame: callback => { queueMicrotask(callback); return 1; }, cancelAnimationFrame() {},
   };
   vm.runInNewContext(script, context, { filename: 'pelican.html' });
   await tick();
-  return { elements, document, async submit() {
+  return { elements, document, close() { windowHandlers.get('pagehide')?.(); }, async poll(delay) {
+    for (const timer of timers.values()) if (timer.delay === delay) await timer.callback();
+    await tick();
+  }, async submit() {
     elements.get('connection-dialog').showModal();
     elements.get('gateway-url').value = 'https://gateway.example.test/';
     elements.get('gateway-key').value = 'test-key-not-a-real-secret';
@@ -313,6 +321,82 @@ function archivedRecord(n, source) {
     source, sourceOmitted: false,
   };
 }
+
+test('hosted refinement is queued once, reopened and compared from the saved job', async () => {
+  let job = null;
+  let saved = null;
+  let directCalls = 0;
+  const mutations = [];
+  const first = '<svg><title>First ride</title></svg>';
+  const revised = '<svg><title>Revised ride</title></svg>';
+  const bridge = {
+    version: 2,
+    request: async ({ method, path, body, query }) => {
+      const input = body && JSON.parse(body);
+      let data;
+      if (path === 'bootstrap') data = { prompt: PROMPT, keys: [{ id: 'test-key', enabled: true }] };
+      else if (path === 'models') data = { models: ['test-model'] };
+      else if (path === 'schedule') data = { settings: null };
+      else if (path === 'history') data = { records: saved ? [saved] : [], total: saved ? 1 : 0, snapshot: saved ? 1 : 0 };
+      else if (path === 'refine' || path === 'refine/stop') {
+        if (method === 'POST') {
+          mutations.push({ path, input });
+          if (path === 'refine') job = { ...input, status: 'queued', rounds: 0 };
+          else job = { ...job, stopRequested: true };
+        }
+        data = { job, maxRounds: 3 };
+      } else if (path === 'refine/draft') {
+        assert.ok(query === 'id=' + job.id + '&version=first' || query === 'id=' + job.id + '&version=latest');
+        data = { record: { ...saved, refinement: undefined, source: query.endsWith('=first') ? first : revised } };
+      } else throw new Error('Unexpected route ' + path);
+      return { status: 200, body: new TextEncoder().encode(JSON.stringify(data)) };
+    },
+    models: { responses() { directCalls++; throw new Error('Unexpected model request'); } },
+  };
+
+  const original = await page({ bridge });
+  const begin = original.elements.get('refine-start');
+  assert.equal(begin.disabled, false);
+  await begin.fire('click');
+  await begin.fire('click');
+  assert.equal(mutations.length, 1);
+  assert.match(job.id, /^refine-[a-f\d]{32}$/);
+  assert.deepEqual(mutations[0].input, { id: job.id, clientKeyId: 'test-key', model: 'test-model', effort: 'low' });
+  assert.match(original.elements.get('refine-status').textContent, /等待 CPR 后台处理/);
+  original.close();
+
+  job = { ...job, status: 'running', rounds: 2, hasDraft: true, hasComparison: true };
+  const reopened = await page({ bridge });
+  const { elements } = reopened;
+  assert.match(elements.get('refine-status').textContent, /第 3 轮.*正在评审/);
+  await elements.get('refine-stop').fire('click');
+  assert.deepEqual(mutations[1], { path: 'refine/stop', input: { id: job.id } });
+  assert.match(elements.get('refine-status').textContent, /已请求停止/);
+  job = { ...job, status: 'done', end: 'accepted', archive: 'saved', rounds: 3 };
+  saved = { ...archivedRecord(1, revised), id: job.id, trigger: 'refined',
+    refinement: { end: 'accepted', rounds: [
+      { action: 'drafted', model: 'test-model', durationMs: 1100, outputTokens: 27 },
+      { action: 'revised', model: 'test-model', durationMs: 1200, outputTokens: 31 },
+      { action: 'accepted', model: 'test-model', durationMs: 1300, outputTokens: 3 },
+    ] } };
+  await reopened.poll(4000);
+  assert.match(elements.get('refine-status').textContent, /评审通过.*已存入生成记录/);
+  assert.equal(elements.get('history-count').textContent, '1 条');
+  assert.match(elements.get('history-rows').children[0].children[0].children[1].textContent, /多轮打磨/);
+  await elements.get('refine-first').fire('click');
+  assert.match(elements.get('dialog-title').textContent, /初稿/);
+  assert.equal(elements.get('dialog-source').textContent, first);
+  await elements.get('close-dialog').fire('click');
+  await elements.get('refine-latest').fire('click');
+  assert.match(elements.get('dialog-title').textContent, /最终稿/);
+  assert.equal(elements.get('dialog-source').textContent, revised);
+  await elements.get('close-dialog').fire('click');
+  const actions = elements.get('history-rows').children[0].children[5].children[0];
+  await actions.children.at(-1).fire('click');
+  assert.match(elements.get('dialog-round-list').children[1].textContent, /修改稿件.*输出 31/);
+  assert.equal(mutations.length, 2);
+  assert.equal(directCalls, 0);
+});
 
 test('hosted history flips to the older page and fetches full source only when opened', async () => {
   const original = archivedRecord(0, '<svg><title>older ride</title><!--' + 'x'.repeat(80_000) + '--></svg>');

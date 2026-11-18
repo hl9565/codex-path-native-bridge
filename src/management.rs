@@ -1,5 +1,7 @@
+mod generation;
 mod history;
 mod identity;
+mod refine;
 mod schedule;
 mod state;
 
@@ -43,6 +45,10 @@ pub(super) fn registration() -> ManagementRegistration {
             route("GET", "schedule"),
             route("POST", "schedule"),
             route("POST", "schedule/pause"),
+            route("GET", "refine"),
+            route("POST", "refine"),
+            route("POST", "refine/stop"),
+            route("GET", "refine/draft"),
         ],
         resources: vec![ManagementResource {
             path: "web/pelican.html".into(),
@@ -51,7 +57,7 @@ pub(super) fn registration() -> ManagementRegistration {
         pages: vec![ManagementPage {
             id: "pelican".into(),
             title: "鹈鹕".into(),
-            description: Some("生成 SVG 动画，点击记录中的缩略图回看。".into()),
+            description: Some("测试 SVG 动画生成，支持单次、定时和多轮打磨。".into()),
             entry: "web/pelican.html".into(),
             icon: None,
         }],
@@ -71,6 +77,10 @@ pub(super) async fn handle(
         ("GET", "schedule") => schedule::status(&call.host).await,
         ("POST", "schedule") => schedule::save(&call.host, &call.payload).await,
         ("POST", "schedule/pause") => schedule::pause(&call.host, &call.payload).await,
+        ("GET", "refine") => refine::status(&call.host).await,
+        ("POST", "refine") => refine::start(&call.host, &call.payload).await,
+        ("POST", "refine/stop") => refine::stop(&call.host, &call.payload).await,
+        ("GET", "refine/draft") => refine::document(&call.host, &call.request.query).await,
         _ => return reply(404, json!({"message": "页面接口不存在"})),
     };
     match result {
@@ -95,13 +105,18 @@ pub(super) async fn handle(
                         "pelican schedule timezone" => {
                             "时区无效，请填写 IANA 时区，例如 Asia/Shanghai。"
                         }
-                        "pelican schedule model" => "所选 Key 当前无法使用此模型。",
+                        "pelican schedule model" | "pelican refine model" => {
+                            "所选 Key 当前无法使用此模型。"
+                        }
                         _ => "请求参数无效",
                     },
                 ),
                 ErrorCode::PermissionDenied => (403, "没有访问权限，或所选 Client Key 不可用"),
                 ErrorCode::Conflict if call.request.path.starts_with("schedule") => {
                     (409, "定时计划刚刚发生变化，请刷新后重试。")
+                }
+                ErrorCode::Conflict if call.request.path.starts_with("refine") => {
+                    (409, "当前有多轮任务或任务状态已变化，请查看最新进度。")
                 }
                 ErrorCode::Conflict => (409, "生成记录正在更新，请稍后重试"),
                 ErrorCode::Timeout => (504, "读取超时，请稍后重试"),

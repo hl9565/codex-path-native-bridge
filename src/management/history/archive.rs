@@ -273,31 +273,16 @@ fn pack(record: Record, ordinal: usize) -> Result<(Stored, Vec<String>), PluginF
         // Leave room for the final part count and JSON string delimiters.
         let overhead = serde_json::to_vec(&stored).map_err(|_| invalid())?.len() + 16;
         let budget = ITEM_BYTES.checked_sub(overhead).ok_or_else(too_large)?;
-        let (first, mut rest) = source.split_at(json_prefix(&source, budget));
+        let (first, mut rest) = source.split_at(state::json_prefix(&source, budget));
         stored.record.source = Some(first.to_owned());
         while !rest.is_empty() {
-            let (part, remaining) = rest.split_at(json_prefix(rest, ITEM_BYTES - 2));
+            let (part, remaining) = rest.split_at(state::json_prefix(rest, ITEM_BYTES - 2));
             parts.push(part.to_owned());
             rest = remaining;
         }
         stored.parts = parts.len();
     }
     Ok((stored, parts))
-}
-
-fn json_prefix(text: &str, budget: usize) -> usize {
-    let mut spent = 0;
-    for (index, ch) in text.char_indices() {
-        spent += match ch {
-            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
-            '\0'..='\u{1f}' => 6,
-            _ => ch.len_utf8(),
-        };
-        if spent > budget {
-            return index;
-        }
-    }
-    text.len()
 }
 
 fn full() -> PluginFault {

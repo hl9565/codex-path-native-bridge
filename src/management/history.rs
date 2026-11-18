@@ -15,7 +15,7 @@ pub(super) const FULL: &str = "pelican history storage is full";
 pub(super) const TOO_LARGE: &str = "pelican history record is too large";
 pub(super) const MISSING: &str = "pelican history record was not found";
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Record {
     pub id: String,
@@ -47,15 +47,18 @@ pub(super) struct Record {
     pub scheduled_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue: Option<Issue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinement: Option<Refinement>,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Outcome {
     Generated,
     NoSvg,
     Incomplete,
     Stopped,
+    #[default]
     Failed,
 }
 
@@ -65,6 +68,7 @@ pub(super) enum Trigger {
     #[default]
     Manual,
     Scheduled,
+    Refined,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -75,6 +79,67 @@ pub(super) enum Issue {
     KeyUnavailable,
     ModelFailed,
     OutputLimit,
+    ReviewInvalid,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Refinement {
+    pub end: RefinementEnd,
+    pub rounds: Vec<RefineRound>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RefinementEnd {
+    Accepted,
+    LimitReached,
+    DraftFailed,
+    ReviewFailed,
+    Interrupted,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RefineAction {
+    Drafted,
+    Revised,
+    Accepted,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RefineRound {
+    pub action: RefineAction,
+    pub model: String,
+    pub duration_ms: u64,
+    pub first_content_ms: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub gateway_request_id: Option<String>,
+    pub issue: Option<Issue>,
+}
+
+impl RefineRound {
+    pub fn from_record(record: &Record, action: RefineAction) -> Self {
+        Self {
+            action,
+            model: record.model.clone(),
+            duration_ms: record.duration_ms,
+            first_content_ms: record.first_content_ms,
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            cached_tokens: record.cached_tokens,
+            reasoning_tokens: record.reasoning_tokens,
+            gateway_request_id: record.gateway_request_id.clone(),
+            issue: record.issue,
+        }
+    }
 }
 
 pub(super) fn scheduled_id(slot_ms: u64) -> String {
@@ -84,14 +149,14 @@ pub(super) fn scheduled_id(slot_ms: u64) -> String {
 impl Record {
     fn is_valid(&self) -> bool {
         let id_valid = match (self.trigger, self.scheduled_at_ms) {
-            (Trigger::Manual, None) => {
-                self.id.len() == 32 && self.id.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }
+            (Trigger::Manual, None) => valid_manual_id(&self.id) && self.refinement.is_none(),
             (Trigger::Scheduled, Some(slot)) => {
                 self.id == scheduled_id(slot)
                     && slot <= self.started_at_ms
                     && slot.is_multiple_of(60_000)
+                    && self.refinement.is_none()
             }
+            (Trigger::Refined, None) => valid_refinement_id(&self.id) && self.refinement.is_some(),
             _ => false,
         };
         id_valid
@@ -179,12 +244,25 @@ pub(super) async fn save_manual(host: &HostClient, payload: &[u8]) -> Result<Val
     Ok(json!({ "saved": true }))
 }
 
+pub(super) fn valid_refinement_id(id: &str) -> bool {
+    id.strip_prefix("refine-").is_some_and(valid_manual_id)
+}
+
+fn valid_manual_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn valid_id(id: &str) -> bool {
-    (id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    valid_manual_id(id)
+        || valid_refinement_id(id)
         || id.strip_prefix("scheduled-").is_some_and(|slot| {
             slot.parse::<u64>()
                 .is_ok_and(|slot| id == scheduled_id(slot) && slot.is_multiple_of(60_000))
         })
+}
+
+pub(super) async fn contains(host: &HostClient, id: &str) -> Result<bool, PluginFault> {
+    Ok(archive::detail(host, id).await?.is_some())
 }
 
 fn too_large() -> PluginFault {

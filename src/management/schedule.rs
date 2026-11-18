@@ -1,5 +1,3 @@
-mod run;
-
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -12,13 +10,15 @@ use gateway_plugin_sdk::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{history, identity, invalid, list_models, state, valid_effort};
+use super::{generation, history, identity, invalid, list_models, refine, state, valid_effort};
 
 const NAMESPACE: &str = "pelican-schedule";
 const KEY: &str = "plan";
 const MINUTE_MS: u64 = 60_000;
 const LEASE_MS: u64 = 135_000;
 const MAX_MODEL_MS: u64 = 90_000;
+// CPR 3.44 waits this long between successful maintenance calls.
+const HOST_INTERVAL_MS: u64 = 30_000;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -208,22 +208,41 @@ pub(super) async fn pause(host: &HostClient, payload: &[u8]) -> Result<Value, Pl
 pub(crate) async fn reconcile(call: TypedCall<Empty>) -> Result<TypedReply<Empty>, PluginFault> {
     let started = Instant::now();
     let host = &call.host;
-    let (Some(mut plan), version) = read(host).await? else {
-        return Ok(done());
-    };
+    let (plan, version) = read(host).await?;
     let now = now_ms();
-    if let Some(claim) = plan.pending {
+    if let Some(claim) = plan.as_ref().and_then(|plan| plan.pending.as_ref()) {
         if now.saturating_sub(claim.started_at_ms) >= LEASE_MS {
             // If the final result was already saved, append keeps that record by ID.
-            let mut record = run::record_for(&claim);
+            let mut record = record_for(claim);
             record.issue = Some(history::Issue::Interrupted);
             finish(host, claim.slot_ms, record).await?;
         }
         return Ok(done());
     }
-    let Some(slot_ms) = plan.next_slot(now)?.filter(|slot| *slot <= now) else {
+    let budget_ms = call.context.timeout_ms;
+    let reserve_ms = 10_000.min(budget_ms / 4);
+    let model_budget = || {
+        budget_ms
+            .saturating_sub(started.elapsed().as_millis() as u64 + reserve_ms)
+            .min(MAX_MODEL_MS)
+    };
+    let next = plan
+        .as_ref()
+        .map(|plan| plan.next_slot(now))
+        .transpose()?
+        .flatten();
+    let Some(slot_ms) = next.filter(|slot| *slot <= now) else {
+        // The host serializes reconciliation per instance. Keep a full
+        // callback and polling interval free before the next scheduled run.
+        let budget = model_budget();
+        let window = budget
+            .saturating_add(reserve_ms)
+            .saturating_add(HOST_INTERVAL_MS);
+        let may_dispatch = next.is_none_or(|slot| slot.saturating_sub(now) > window);
+        refine::reconcile(host, may_dispatch.then_some(budget)).await?;
         return Ok(done());
     };
+    let mut plan = plan.ok_or_else(invalid)?;
     let claim = Claim {
         slot_ms,
         started_at_ms: now,
@@ -240,12 +259,23 @@ pub(crate) async fn reconcile(call: TypedCall<Empty>) -> Result<TypedReply<Empty
         Err(error) => return Err(error),
     }
     // Commit the slot before sending the request. A crash or lost reply is not a retry signal.
-    let budget_ms = call.context.timeout_ms;
-    let reserve_ms = 10_000.min(budget_ms / 4);
-    let remaining_ms = budget_ms.saturating_sub(started.elapsed().as_millis() as u64 + reserve_ms);
-    let record = run::execute(host, &claim, remaining_ms.min(MAX_MODEL_MS)).await;
+    let record = generation::draft(host, record_for(&claim), model_budget()).await;
     finish(host, slot_ms, record).await?;
     Ok(done())
+}
+
+fn record_for(claim: &Claim) -> history::Record {
+    history::Record {
+        id: history::scheduled_id(claim.slot_ms),
+        started_at_ms: claim.started_at_ms,
+        model: claim.model.clone(),
+        effort: claim.effort.clone(),
+        trigger: history::Trigger::Scheduled,
+        client_key_id: Some(claim.client_key_id.clone()),
+        client_key_name: claim.key_name.clone(),
+        scheduled_at_ms: Some(claim.slot_ms),
+        ..history::Record::default()
+    }
 }
 
 async fn finish(

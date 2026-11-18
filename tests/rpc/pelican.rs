@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use chrono::Utc;
 use gateway_plugin_sdk::call::{
@@ -16,6 +16,66 @@ const ACCOUNT: &str = "routed-account";
 const SVG: &str = "<svg viewBox='0 0 12 12'><circle r='2'/></svg>";
 const ARCHIVE: &str = "pelican-archive";
 const INDEX: &str = "pelican-archive-index";
+const REFINE: &str = "pelican-refine";
+const REVISED: &str = "<!doctype html><html><svg><circle r='4'/></svg></html>";
+const POLISHED: &str = "<!doctype html><html><svg><circle r='6'/></svg></html>";
+
+enum ModelReply {
+    Draft,
+    Keep,
+    Replace(&'static str),
+    InvalidEdit,
+}
+
+impl ModelReply {
+    fn batches(self) -> VecDeque<Vec<CanonicalEvent>> {
+        let ending = |reason| {
+            vec![
+                CanonicalEvent::Usage {
+                    usage: Usage {
+                        input_tokens: Some(7),
+                        output_tokens: Some(19),
+                        reasoning_tokens: Some(3),
+                        ..Usage::default()
+                    },
+                },
+                CanonicalEvent::Completed {
+                    id: "fixture-response".into(),
+                    model: Some("resolved-model".into()),
+                    reason,
+                },
+            ]
+        };
+        let (name, args) = match self {
+            Self::Draft => {
+                let mut events = vec![CanonicalEvent::TextDelta {
+                    index: 0,
+                    text: SVG.into(),
+                }];
+                events.extend(ending(FinishReason::Stop));
+                return VecDeque::from([events]);
+            }
+            Self::Keep => ("finish_draft", "{}".to_string()),
+            Self::Replace(html) => ("replace_draft", json!({"html": html}).to_string()),
+            Self::InvalidEdit => ("replace_draft", r#"{"html":"<html><svg>"#.into()),
+        };
+        let tool = |name: Option<&str>, arguments: &str| CanonicalEvent::ToolCallDelta {
+            index: 1,
+            id: if name.is_some() {
+                "call-edit"
+            } else {
+                "fc-edit"
+            }
+            .into(),
+            name: name.map(str::to_owned),
+            arguments: arguments.into(),
+        };
+        let (first, last) = args.split_at(args.len() / 2);
+        let mut end = vec![tool(None, last)];
+        end.extend(ending(FinishReason::ToolCall));
+        VecDeque::from([vec![tool(Some(name), ""), tool(None, first)], end])
+    }
+}
 
 #[derive(Default)]
 struct Fixture {
@@ -26,6 +86,10 @@ struct Fixture {
     usage_key_mismatch: bool,
     data_writes_before_full: Option<usize>,
     interrupt_publish: bool,
+    refinements: Vec<Value>,
+    refinement_claims: BTreeSet<(String, usize)>,
+    model_replies: VecDeque<ModelReply>,
+    stream_batches: VecDeque<Vec<CanonicalEvent>>,
 }
 
 impl Fixture {
@@ -77,8 +141,10 @@ impl Fixture {
                         "lost final index write",
                     ));
                 }
-                if key.0 == ARCHIVE {
+                if key.0 == ARCHIVE || key.0 == REFINE {
                     assert!(serde_json::to_vec(&params["value"]).unwrap().len() <= 48 * 1024);
+                }
+                if key.0 == ARCHIVE {
                     if let Some(writes) = self.data_writes_before_full.as_mut() {
                         if *writes == 0 {
                             return Err(PluginFault::new(
@@ -115,13 +181,6 @@ impl Fixture {
                 json!({"models": ["fixture-model"]})
             }
             host::MODEL_EXECUTE_STREAM => {
-                let slot = self.plan()["pending"]["slotMs"]
-                    .as_u64()
-                    .expect("claim precedes dispatch");
-                assert!(
-                    self.issued_slots.insert(slot),
-                    "the same slot dispatched twice"
-                );
                 assert_eq!(params["client_key_id"], KEY);
                 assert_eq!(params["model"], "fixture-model");
                 assert_eq!(params["protocol"], "openai");
@@ -135,46 +194,75 @@ impl Fixture {
                     .split_once('\'')
                     .unwrap()
                     .0;
-                assert_eq!(
-                    serde_json::from_slice::<Value>(payload).unwrap(),
-                    json!({
-                        "model": "fixture-model", "stream": true, "store": false, "tools": [],
-                        "reasoning": {"effort": "high"},
-                        "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                    })
-                );
+                let input: Value = serde_json::from_slice(payload).unwrap();
+                let expected = json!({
+                    "model": "fixture-model", "stream": true, "store": false, "tools": [],
+                    "reasoning": {"effort": "high"},
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                });
+                assert!(self.stream_batches.is_empty());
+                let slot = self
+                    .state
+                    .get(&("pelican-schedule".into(), "plan".into()))
+                    .and_then(|(_, plan)| plan["pending"]["slotMs"].as_u64());
+                let reply = if let Some(slot) = slot {
+                    assert!(
+                        self.issued_slots.insert(slot),
+                        "the same slot dispatched twice"
+                    );
+                    assert_eq!(input, expected);
+                    ModelReply::Draft
+                } else {
+                    let job = &self.state[&(REFINE.into(), "job".into())].1;
+                    assert_eq!(job["phase"]["state"], "running", "claim precedes dispatch");
+                    let id = job["selection"]["id"].as_str().unwrap().to_owned();
+                    let completed = job["rounds"].as_array().unwrap().len();
+                    assert!(
+                        self.refinement_claims.insert((id, completed)),
+                        "a round dispatched twice"
+                    );
+                    if completed == 0 {
+                        assert_eq!(
+                            input, expected,
+                            "draft uses the untouched prompt and parameters"
+                        );
+                    } else {
+                        assert_eq!(input["input"][0], expected["input"][0]);
+                        assert_eq!(input["tool_choice"], "required");
+                        assert_eq!(input["parallel_tool_calls"], false);
+                        let tools: Vec<_> = input["tools"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|tool| tool["name"].as_str().unwrap())
+                            .collect();
+                        assert_eq!(tools, ["replace_draft", "finish_draft"]);
+                    }
+                    self.refinements.push(input);
+                    self.model_replies
+                        .pop_front()
+                        .expect("unexpected refinement request")
+                };
                 if self.reject_generation {
                     return Err(PluginFault::new(
                         ErrorCode::PermissionDenied,
                         "fixture Key disabled",
                     ));
                 }
+                self.stream_batches = reply.batches();
                 json!({"stream": "fixture-stream", "request_id": REQUEST})
             }
             host::MODEL_STREAM_READ => {
                 assert_eq!(params["stream"], "fixture-stream");
-                let events = ModelEventBatch {
-                    events: vec![
-                        ExecutionEvent::canonical(CanonicalEvent::TextDelta {
-                            index: 0,
-                            text: SVG.into(),
-                        }),
-                        ExecutionEvent::canonical(CanonicalEvent::Usage {
-                            usage: Usage {
-                                input_tokens: Some(7),
-                                output_tokens: Some(19),
-                                reasoning_tokens: Some(3),
-                                ..Usage::default()
-                            },
-                        }),
-                        ExecutionEvent::canonical(CanonicalEvent::Completed {
-                            id: "fixture-response".into(),
-                            model: Some("resolved-model".into()),
-                            reason: FinishReason::Stop,
-                        }),
-                    ],
-                };
-                return Ok((json!({"end": true, "events": 3}), events.encode().unwrap()));
+                let events = self
+                    .stream_batches
+                    .pop_front()
+                    .expect("stream not issued")
+                    .into_iter()
+                    .map(ExecutionEvent::canonical)
+                    .collect::<Vec<_>>();
+                let result = json!({"end": self.stream_batches.is_empty(), "events": events.len()});
+                return Ok((result, ModelEventBatch { events }.encode().unwrap()));
             }
             CALL_METHOD => {
                 assert_eq!(
@@ -242,6 +330,21 @@ fn settings(enabled: bool) -> Value {
         "cron": "* * * * *", "timezone": "UTC"})
 }
 
+fn refinement(id: u32) -> (String, Value) {
+    let id = format!("refine-{id:032x}");
+    let input = json!({"id": id, "clientKeyId": KEY, "model": "fixture-model", "effort": "high"});
+    (id, input)
+}
+
+fn draft_received(body: &Value) -> &str {
+    body["input"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .split_once("\n\nCurrent HTML draft:\n")
+        .unwrap()
+        .1
+}
+
 fn state_key(params: &Value) -> (String, String) {
     (
         params["namespace"].as_str().unwrap().into(),
@@ -255,6 +358,176 @@ fn record(id: u32, source: &str) -> Value {
         "model": "fixture-model", "effort": "low", "outcome": "generated", "trigger": "manual",
         "durationMs": 100, "firstContentMs": 20, "source": source, "sourceOmitted": false,
     })
+}
+
+#[tokio::test]
+async fn refinement_uses_the_checkpoint_after_restart_and_stops_at_the_cap() {
+    let mut host = start().await;
+    let mut fixture = Fixture {
+        model_replies: VecDeque::from([
+            ModelReply::Draft,
+            ModelReply::Replace(REVISED),
+            ModelReply::Replace(POLISHED),
+        ]),
+        ..Fixture::default()
+    };
+    let (id, input) = refinement(1);
+    let (code, submitted) = fixture.management(&mut host, "/refine", Some(&input)).await;
+    assert_eq!(code, 200);
+    assert_eq!(submitted["job"]["status"], "queued");
+    assert_eq!(
+        fixture.management(&mut host, "/refine", Some(&input)).await,
+        (200, submitted)
+    );
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&refinement(2).1))
+            .await
+            .0,
+        409
+    );
+    assert!(fixture.refinements.is_empty());
+    fixture.tick(&mut host).await;
+    host.shutdown().await;
+
+    let mut host = start().await;
+    let (_, resumed) = fixture.management(&mut host, "/refine", None).await;
+    assert_eq!(resumed["job"]["rounds"], 1);
+    assert_eq!(resumed["job"]["hasDraft"], true);
+    assert_eq!(
+        fixture.refinements.len(),
+        1,
+        "opening the page cannot start another call"
+    );
+    fixture.tick(&mut host).await;
+    assert_eq!(draft_received(&fixture.refinements[1]), SVG);
+    fixture.tick(&mut host).await;
+    assert_eq!(draft_received(&fixture.refinements[2]), REVISED);
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.refinements.len(), 3);
+
+    let (_, done) = fixture.management(&mut host, "/refine", None).await;
+    assert_eq!(done["job"]["end"], "limit_reached");
+    assert_eq!(done["job"]["archive"], "saved");
+    assert_eq!(done["job"]["hasComparison"], true);
+    for (version, source) in [("first", SVG), ("latest", POLISHED)] {
+        let (code, item) = fixture
+            .management(
+                &mut host,
+                &format!("/refine/draft?id={id}&version={version}"),
+                None,
+            )
+            .await;
+        assert_eq!(code, 200);
+        assert_eq!(item["record"]["source"], source);
+    }
+    let (_, page) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(page["total"], 1);
+    let archived = &page["records"][0];
+    assert_eq!(archived["id"], id);
+    assert_eq!(archived["trigger"], "refined");
+    assert_eq!(archived["source"], POLISHED);
+    assert_eq!(archived["inputTokens"], 21);
+    assert_eq!(archived["outputTokens"], 57);
+    assert_eq!(archived["refinement"]["rounds"][1]["action"], "revised");
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn approval_and_invalid_edits_both_end_early_without_losing_the_draft() {
+    let mut host = start().await;
+    let mut fixture = Fixture::default();
+    for (n, reply, end, action) in [
+        (1, ModelReply::Keep, "accepted", "accepted"),
+        (2, ModelReply::InvalidEdit, "review_failed", "failed"),
+        (3, ModelReply::Replace(SVG), "accepted", "accepted"),
+    ] {
+        fixture.model_replies.extend([ModelReply::Draft, reply]);
+        let (id, input) = refinement(n);
+        assert_eq!(
+            fixture
+                .management(&mut host, "/refine", Some(&input))
+                .await
+                .0,
+            200
+        );
+        for _ in 0..3 {
+            fixture.tick(&mut host).await;
+        }
+        let (_, done) = fixture.management(&mut host, "/refine", None).await;
+        assert_eq!(done["job"]["rounds"], 2);
+        assert_eq!(done["job"]["end"], end);
+        assert_eq!(done["job"]["hasComparison"], false);
+        let (_, saved) = fixture
+            .management(&mut host, &format!("/history/record?id={id}"), None)
+            .await;
+        assert_eq!(saved["record"]["source"], SVG);
+        assert_eq!(saved["record"]["outcome"], "generated");
+        let review = &saved["record"]["refinement"]["rounds"][1];
+        assert_eq!(review["action"], action);
+        if end == "review_failed" {
+            assert_eq!(review["issue"], "review_invalid");
+        }
+    }
+    assert_eq!(fixture.refinements.len(), 6);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn schedule_gets_priority_and_stopping_keeps_draft_even_if_archive_is_full() {
+    let mut host = start().await;
+    let mut fixture = Fixture {
+        model_replies: VecDeque::from([ModelReply::Draft]),
+        ..Fixture::default()
+    };
+    assert_eq!(
+        fixture
+            .management(&mut host, "/schedule", Some(&settings(true)))
+            .await
+            .0,
+        200
+    );
+    fixture.plan()["armedAfterSlotMs"] = json!(0);
+    let (id, input) = refinement(1);
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&input))
+            .await
+            .0,
+        200
+    );
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.issued_slots.len(), 1);
+    assert!(fixture.refinements.is_empty());
+    fixture
+        .management(&mut host, "/schedule/pause", Some(&json!({})))
+        .await;
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.refinements.len(), 1);
+
+    let (_, stop) = fixture
+        .management(&mut host, "/refine/stop", Some(&json!({"id": id})))
+        .await;
+    assert_eq!(stop["job"]["stopRequested"], true);
+    fixture.data_writes_before_full = Some(0);
+    fixture.tick(&mut host).await;
+    fixture.tick(&mut host).await;
+    let (_, done) = fixture.management(&mut host, "/refine", None).await;
+    assert_eq!(done["job"]["end"], "stopped");
+    assert_eq!(done["job"]["archive"], "full");
+    assert_eq!(fixture.refinements.len(), 1);
+    let (_, draft) = fixture
+        .management(
+            &mut host,
+            &format!("/refine/draft?id={id}&version=latest"),
+            None,
+        )
+        .await;
+    assert_eq!(draft["record"]["source"], SVG);
+    let (_, page) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(page["total"], fixture.issued_slots.len());
+    assert_eq!(page["records"][0]["trigger"], "scheduled");
+    host.shutdown().await;
 }
 
 #[tokio::test]
