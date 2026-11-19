@@ -104,7 +104,7 @@ function storage(maxEntries = Infinity) {
   };
 }
 
-async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = storage(), clipboard } = {}) {
+async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = storage(), clipboard, clock } = {}) {
   const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], new Element(match[1])]));
   elements.get('effort').value = 'low';
   elements.get('verbosity').value = 'auto';
@@ -135,18 +135,27 @@ async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = st
   let timestamp = 1_700_000_000_000;
   let timerId = 0;
   const timers = new Map();
+  const timeouts = new Map();
+  const now = () => clock?.now ?? Date.now();
   const windowHandlers = new Map();
   const context = {
     document, location: { protocol: proxy ? 'http:' : 'file:', hostname: proxy ? '127.0.0.1' : '', origin: proxy ? 'http://127.0.0.1:3217' : 'null' },
     window: { codexProxyPlugin: bridge, localStorage, addEventListener: (name, callback) => windowHandlers.set(name, callback) },
     crypto: webcrypto,
-    Date: class extends Date { constructor(...args) { super(...(args.length ? args : [timestamp += 1_000])); } },
+    Date: class extends Date {
+      constructor(...args) { super(...(args.length ? args : [timestamp += 1_000])); }
+      static now() { return now(); }
+    },
     Option: class { constructor(text, value) { this.text = this.textContent = text; this.value = value; this.isOption = true; } },
     fetch: fetchImpl ?? (() => { throw new Error('Unexpected network request'); }),
     navigator: clipboard ? { clipboard } : {},
     XMLSerializer: class { serializeToString(node) { return node.raw || '<svg></svg>'; } },
     performance, Intl, URL, Headers, Response, Blob, TextDecoder, TextEncoder, AbortController, AbortSignal, DOMException, TypeError,
-    setTimeout: () => 0, clearTimeout() {},
+    setTimeout(callback, delay) {
+      timeouts.set(++timerId, { callback, at: now() + delay });
+      return timerId;
+    },
+    clearTimeout: id => timeouts.delete(id),
     setInterval(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
     clearInterval: id => timers.delete(id),
     requestAnimationFrame: callback => { queueMicrotask(callback); return 1; }, cancelAnimationFrame() {},
@@ -155,6 +164,14 @@ async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = st
   await tick();
   return { elements, document, close() { windowHandlers.get('pagehide')?.(); }, async poll(delay) {
     for (const timer of timers.values()) if (timer.delay === delay) await timer.callback();
+    await tick();
+  }, async advance(ms) {
+    clock.now += ms;
+    for (const [id, timer] of timeouts) {
+      if (timer.at > clock.now) continue;
+      timeouts.delete(id);
+      timer.callback();
+    }
     await tick();
   }, async submit() {
     elements.get('connection-dialog').showModal();
@@ -312,6 +329,8 @@ test('standalone history survives reload and opens the older animation without r
   assert.equal(latest.children[3].children[0].textContent, '已生成');
   assert.equal(latest.children[2].children[1].textContent, '上游 · 未知');
   const thumb = first.children[5].children[0].children[0];
+  assert.equal(thumb.children.some(node => node.className === 'thumb-marker'), false);
+  assert.match(reopened.elements.get('history-hint').textContent, /看大图/);
   await thumb.fire('click');
   assert.equal(reopened.elements.get('preview-dialog').open, true);
   const [frame] = reopened.elements.get('dialog-frame').children;
@@ -324,67 +343,137 @@ test('standalone history survives reload and opens the older animation without r
   assert.equal(requests, 2);
 });
 
-test('hosted scheduling config is independent of the manual run and can be paused', async () => {
-  let settings = null;
+test('hosted schedule cards create, edit, pause and delete independent plans', async () => {
+  const plans = [];
+  const submissions = [];
   let modelRuns = 0;
   const scheduledAtMs = 1_700_000_040_000;
+  const saved = {
+    ...archivedRecord(1, '<svg></svg>'), id: 'scheduled-night-' + scheduledAtMs,
+    startedAtMs: scheduledAtMs + 700, scheduledAtMs, trigger: 'scheduled',
+    model: 'nightly-model', clientKeyName: 'Scheduled Key', accountName: 'Night Account',
+  };
+  const records = [
+    saved, { ...saved, id: 'scheduled-' + scheduledAtMs },
+    { ...saved, id: 'scheduled-INVALID-' + scheduledAtMs },
+    { ...saved, id: 'scheduled-night-0' + scheduledAtMs },
+    { ...saved, id: 'scheduled-night-' + (scheduledAtMs + 1), scheduledAtMs: scheduledAtMs + 1 },
+    { ...saved, id: 'scheduled-night-' + (scheduledAtMs + 60000), scheduledAtMs: scheduledAtMs + 60000 },
+  ];
   const bridge = {
-    version: 2, theme: 'light',
-    request: async ({ method, path: relativePath, body }) => {
-      assert.ok(!relativePath.startsWith('/'), 'CPR requires an instance-relative path');
-      const path = '/' + relativePath;
+    version: 2, theme: 'dark',
+    request: async ({ method, path, body }) => {
+      assert.ok(!path.startsWith('/'), 'CPR requires an instance-relative path');
       const input = body && JSON.parse(body);
       let data;
-      if (path === '/bootstrap') data = { prompt: PROMPT, keys: [
+      if (path === 'bootstrap') data = { prompt: PROMPT, keys: [
         { id: 'manual-id', name: 'Manual Key', enabled: true },
         { id: 'scheduled-id', name: 'Scheduled Key', enabled: true },
       ] };
-      else if (path === '/models') data = { models: [input.clientKeyId === 'manual-id' ? 'manual-model' : 'nightly-model'] };
-      else if (path === '/history') data = { records: [{
-        id: 'scheduled-' + scheduledAtMs, startedAtMs: scheduledAtMs + 700, scheduledAtMs,
-        trigger: 'scheduled', model: 'nightly-model', effort: 'high', outcome: 'generated',
-        clientKeyName: 'Scheduled Key', accountName: 'Night Account', durationMs: 200, source: '<svg></svg>',
-      }], total: 1, snapshot: 1 };
-      else if (path === '/schedule' || path === '/schedule/pause') {
-        if (method === 'POST') settings = path.endsWith('/pause') ? { ...settings, enabled: false } : input;
-        data = { settings, nextRunAtMs: settings?.enabled ? scheduledAtMs + 60_000 : null };
+      else if (path === 'models') data = { models: [input.clientKeyId === 'manual-id' ? 'manual-model' : 'nightly-model'] };
+      else if (path === 'history') data = { records, total: 2, snapshot: 2 };
+      else if (path === 'refine') data = { job: { id: saved.id, trigger: 'scheduled', status: 'running' }, queue: [], maxRounds: 1 };
+      else if (path === 'schedule' || path.startsWith('schedule/')) {
+        data = { plans, maxPlans: 10 };
+        if (method === 'POST') {
+          submissions.push({ path, input });
+          if (path === 'schedule') {
+            const { id, name, ...settings } = input;
+            const index = id ? plans.findIndex(plan => plan.id === id) : plans.length;
+            const savedId = id || 'plan' + index;
+            plans[index] = {
+              ...plans[index], id: savedId, name, settings, keyName: settings.clientKeyId === 'scheduled-id' ? 'Scheduled Key' : 'Manual Key',
+              nextRunAtMs: settings.enabled ? scheduledAtMs + 60_000 : null,
+            };
+            data.savedId = savedId;
+          } else if (path === 'schedule/pause') {
+            for (const plan of plans) if (!input.id || input.id === plan.id) plan.settings.enabled = input.enabled ?? false;
+          } else if (path === 'schedule/delete') {
+            plans.splice(plans.findIndex(plan => plan.id === input.id), 1);
+          } else throw new Error('Unexpected schedule route: ' + path);
+        }
       } else throw new Error('Unexpected management route: ' + path);
       return { status: 200, body: new TextEncoder().encode(JSON.stringify(data)) };
     },
     models: { responses: async () => { modelRuns++; throw new Error('No model request expected'); } },
   };
-  const { elements } = await page({ bridge });
+  const { elements, document, close } = await page({ bridge });
+  assert.equal(document.documentElement.dataset.theme, 'dark');
   assert.equal(elements.get('schedule-panel').hidden, false);
+  assert.equal(elements.get('schedule-form').hidden, true);
+  assert.equal(elements.get('schedule-state').textContent, '未设置');
+  await elements.get('schedule-add').fire('click');
   assert.equal(elements.get('schedule-enabled').checked, false);
   elements.get('schedule-key').value = 'scheduled-id';
   await elements.get('schedule-key').fire('change');
   for (const [id, value] of Object.entries({
-    'schedule-model': 'nightly-model', 'schedule-effort': 'high', 'schedule-verbosity': 'high',
-    'schedule-cron': '0 9 * * 1-5', 'schedule-timezone': 'Asia/Shanghai',
-  })) {
-    elements.get(id).value = value;
-    await elements.get(id).fire('input');
-  }
+    'schedule-name': 'Nightly', 'schedule-model': 'nightly-model', 'schedule-effort': 'high',
+    'schedule-verbosity': 'high', 'schedule-cron': '0 9 * * 1-5', 'schedule-timezone': 'Asia/Shanghai',
+  })) elements.get(id).value = value;
+  await elements.get('schedule-model').fire('change');
   elements.get('schedule-enabled').checked = true;
   await elements.get('schedule-form').fire('submit');
-  assert.deepEqual(settings, {
-    enabled: true, clientKeyId: 'scheduled-id', model: 'nightly-model',
+  assert.deepEqual(submissions[0], { path: 'schedule', input: {
+    name: 'Nightly', enabled: true, clientKeyId: 'scheduled-id', model: 'nightly-model',
     effort: 'high', verbosity: 'high', cron: '0 9 * * 1-5', timezone: 'Asia/Shanghai',
-  });
-  assert.match(elements.get('schedule-status').textContent, /下一次.*Asia\/Shanghai/);
+  } });
+  assert.equal(elements.get('schedule-form').hidden, true);
+  assert.equal(elements.get('schedule-state').textContent, '已启用 1 / 1 个');
+  const planInfo = elements.get('schedule-list').children[0].children[0];
+  assert.match(planInfo.children[1].textContent, /nightly-model.*high.*Asia\/Shanghai.*Scheduled Key/);
+  assert.match(planInfo.children[2].textContent, /下一次/);
   assert.equal(elements.get('model').value, 'manual-model');
-  const scheduleRow = elements.get('history-rows').children[0];
-  assert.match(scheduleRow.children[0].children[1].textContent, /定时/);
-  assert.equal(scheduleRow.children[2].children[1].textContent, '上游 · Night Account');
+  assert.match(elements.get('refine-status').textContent, /正在单次直出生成/);
+  const rows = elements.get('history-rows').children;
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].children[0].children[1].textContent, /定时/);
+  assert.equal(rows[0].children[2].children[1].textContent, '上游 · Night Account');
+
+  await elements.get('schedule-add').fire('click');
+  elements.get('schedule-name').value = 'Lunch';
+  elements.get('schedule-enabled').checked = true;
+  elements.get('schedule-cron').value = '0 12 * * *';
+  await elements.get('schedule-form').fire('submit');
+  assert.equal(plans.length, 2);
+  plans[0].historySaveFailure = { slotMs: scheduledAtMs, reason: 'full' };
+  plans[1].historySaveFailure = { slotMs: scheduledAtMs, reason: 'unconfirmed' };
+  plans[1].runningSinceMs = scheduledAtMs + 500;
+  close();
 
   const reopened = await page({ bridge });
-  assert.equal(reopened.elements.get('schedule-key').value, 'scheduled-id');
-  assert.equal(reopened.elements.get('schedule-model').value, 'nightly-model');
-  await reopened.elements.get('schedule-pause').fire('click');
-  assert.equal(settings.enabled, false);
-  assert.equal(reopened.elements.get('schedule-enabled').checked, false);
-  assert.equal(reopened.elements.get('schedule-state').textContent, '已暂停');
+  const ui = reopened.elements;
+  const actions = (index) => ui.get('schedule-list').children[index].children[1].children;
+  assert.equal(ui.get('schedule-state').textContent, '执行中');
+  assert.match(ui.get('history-schedule-warning').textContent, /Nightly.*存储已满.*\n.*Lunch.*未确认保存/);
+  assert.match(ui.get('schedule-list').children[0].children[0].children[3].textContent, /存储已满/);
+  await actions(0)[1].fire('click');
+  assert.equal(ui.get('schedule-key').value, 'scheduled-id');
+  assert.equal(ui.get('schedule-model').value, 'nightly-model');
+  ui.get('schedule-name').value = 'Nightly updated';
+  await reopened.poll(30000);
+  assert.equal(ui.get('schedule-name').value, 'Nightly updated');
+  await ui.get('schedule-form').fire('submit');
+  assert.equal(submissions[2].input.id, 'plan0');
+  assert.equal(plans[0].name, 'Nightly updated');
+
+  plans[1].runningSinceMs = null;
+  await actions(0)[0].fire('click');
+  assert.deepEqual(submissions[3].input, { id: 'plan0', enabled: false });
+  assert.equal(ui.get('schedule-state').textContent, '已启用 1 / 2 个');
+  await actions(0)[0].fire('click');
+  assert.deepEqual(submissions[4].input, { id: 'plan0', enabled: true });
+  await ui.get('schedule-pause').fire('click');
+  assert.deepEqual(submissions[5].input, {});
+  assert.equal(ui.get('schedule-state').textContent, '全部已暂停');
+  await actions(0)[2].fire('click');
+  assert.deepEqual(submissions[6], { path: 'schedule/delete', input: { id: 'plan0' } });
+  assert.equal(ui.get('schedule-list').children.length, 1);
+  assert.doesNotMatch(ui.get('history-schedule-warning').textContent, /Nightly/);
+  await ui.get('schedule-add').fire('click');
+  await ui.get('schedule-cancel').fire('click');
+  assert.equal(ui.get('schedule-form').hidden, true);
   assert.equal(modelRuns, 0);
+  reopened.close();
 });
 
 function archivedRecord(n, source) {
@@ -423,7 +512,7 @@ test('hosted manual button enqueues refinement, selects main SVG, and opens exte
       let data;
       if (path === 'bootstrap') data = { prompt: PROMPT, keys: [{ id: 'test-key', enabled: true }] };
       else if (path === 'models') data = { models: ['test-model'] };
-      else if (path === 'schedule') data = { settings: null };
+      else if (path === 'schedule') data = { plans: [], maxPlans: 10 };
       else if (path === 'history') data = { records: saved ? [saved] : [], total: saved ? 1 : 0, snapshot: saved ? 1 : 0 };
       else if (path === 'refine' || path === 'refine/stop') {
         if (method === 'POST') {
@@ -496,13 +585,24 @@ test('hosted history flips to the older page and fetches full source only when o
   const original = archivedRecord(0, '<svg><title>older ride</title><!--' + 'x'.repeat(80_000) + '--></svg>');
   const recent = Array.from({ length: 20 }, (_, n) => archivedRecord(20 - n, '<svg></svg>'));
   const calls = [];
+  const opened = [];
+  let ticketCount = 0;
+  let inClick = false;
   const status = new TextEncoder();
   const bridge = {
     version: 2,
+    callbackTicket: async () => ({
+      callbackUrl: 'https://cpr.example.test/cb?state=' + ++ticketCount,
+      expiresAtMs: Date.now() + 300_000,
+    }),
+    openExternal: async url => {
+      opened.push({ url, inClick });
+    },
     request: async ({ path, query }) => {
       let data;
       if (path === 'bootstrap') data = { prompt: PROMPT, keys: [] };
-      else if (path === 'schedule') data = { settings: null, historySaveFailure: { slotMs: 1_690_000_000_000, reason: 'full' } };
+      else if (path === 'schedule') data = { plans: [], maxPlans: 10 };
+      else if (path === 'refine') data = { job: null, queue: [], maxRounds: 1 };
       else {
         calls.push({ path, query });
         if (path === 'history') data = { total: 21, snapshot: 21,
@@ -514,22 +614,35 @@ test('hosted history flips to the older page and fetches full source only when o
     },
     models: { responses: async () => { throw new Error('History must not generate'); } },
   };
-  const { elements } = await page({ bridge });
+  const { elements, close } = await page({ bridge });
+  assert.equal(ticketCount, 1);
   assert.equal(elements.get('history-count').textContent, '21 条');
   assert.equal(elements.get('history-rows').children.length, 20);
-  assert.match(elements.get('history-schedule-warning').textContent, /存储已满.*未保存/);
   await elements.get('history-next').fire('click');
   assert.deepEqual(calls.at(-1), { path: 'history', query: 'offset=20&snapshot=21' });
   assert.equal(elements.get('history-page').textContent, '第 2 / 2 页');
   assert.equal(elements.get('history-next').disabled, true);
   assert.equal(elements.get('history-rows').children.length, 1);
   const actions = elements.get('history-rows').children[0].children[5].children[0];
+  assert.equal(actions.children[0].children.at(-1).className, 'thumb-marker');
+  assert.match(elements.get('history-hint').textContent, /新标签页播放/);
+  inClick = true;
+  const click = actions.children[0].fire('click');
+  inClick = false;
+  assert.deepEqual(opened, [{ url: 'https://cpr.example.test/cb?state=1&id=' + original.id, inClick: true }]);
+  await click;
+  await tick();
+  assert.equal(ticketCount, 2);
+  assert.equal(elements.get('preview-dialog').open, false);
+  assert.match(elements.get('history-hint').textContent, /宿主弹出的确认框.*打开链接/);
+  assert.equal(calls.some(call => call.path === 'history/record'), false);
   await actions.children[1].fire('click');
   assert.deepEqual(calls.at(-1), { path: 'history/record', query: 'id=' + original.id });
   assert.equal(elements.get('preview-dialog').open, true);
   assert.equal(elements.get('dialog-source').textContent, original.source);
   await elements.get('history-prev').fire('click');
   assert.equal(elements.get('history-rows').children.length, 20);
+  close();
 });
 
 test('browser quota preserves legacy history and keeps the rejected source accessible in the page', async () => {
@@ -586,7 +699,7 @@ test('external playback refreshes expired prefetched tickets and ignores stale c
       let data;
       if (path === 'bootstrap') data = { prompt: PROMPT, keys: [{ id: 'k1', enabled: true }] };
       else if (path === 'models') data = { models: ['m1'] };
-      else if (path === 'schedule') data = { settings: null };
+      else if (path === 'schedule') data = { plans: [], maxPlans: 10 };
       else if (path === 'refine') data = { job: null, queue: [], queuedCount: 0, maxRounds: 1 };
       else if (path === 'history') data = { records: [sample], total: 1, snapshot: 1 };
       else throw new Error('Unexpected route ' + path);
@@ -600,15 +713,110 @@ test('external playback refreshes expired prefetched tickets and ignores stale c
   assert.match(decodeURIComponent(thumbImg.src), /600 300/);
   assert.doesNotMatch(decodeURIComponent(thumbImg.src), /2000 2000/);
 
-  await thumbBtn.fire('click');
+  await elements.get('history-rows').children[0].children[5].children[0].children[1].fire('click');
   await tick();
-  assert.deepEqual(issuedTickets, ['t-1']);
+  assert.deepEqual(issuedTickets, ['t-1', 't-2']);
 
   const clickPromise = elements.get('open-external').fire('click');
   await tick();
-  assert.deepEqual(issuedTickets, ['t-1', 't-2']);
+  assert.deepEqual(issuedTickets, ['t-1', 't-2', 't-3']);
   elements.get('close-dialog').fire('click');
   rejectExternal(new Error('user dismissed'));
   await clickPromise;
   assert.deepEqual(copied, []);
+});
+
+function playbackFixture(sample, methods) {
+  return {
+    version: 2,
+    ...methods,
+    async request({ path }) {
+      const routes = {
+        bootstrap: { prompt: PROMPT, keys: [] },
+        schedule: { plans: [], maxPlans: 10 },
+        refine: { job: null, queue: [], maxRounds: 1 },
+        history: { records: [sample], total: 1, snapshot: 1 },
+      };
+      assert.ok(Object.hasOwn(routes, path), 'Unexpected route ' + path);
+      return { status: 200, body: new TextEncoder().encode(JSON.stringify(routes[path])) };
+    },
+  };
+}
+
+test('the hosted spare is renewed at expiry and shared while a ticket request is pending', async () => {
+  const sample = archivedRecord(1, '<svg></svg>');
+  const clock = { now: 1_700_000_000_000 };
+  const opened = [];
+  let finishTicket;
+  let issued = 0;
+  const bridge = playbackFixture(sample, {
+    callbackTicket() {
+      issued += 1;
+      return new Promise(resolve => {
+        finishTicket = () => resolve({
+          callbackUrl: 'https://cpr.example.test/cb?state=' + issued,
+          expiresAtMs: clock.now + 300_000,
+        });
+      });
+    },
+    openExternal: async url => { opened.push(url); },
+  });
+  const ui = await page({ bridge, clock });
+  const thumb = ui.elements.get('history-rows').children[0].children[5].children[0].children[0];
+  const firstClick = thumb.fire('click');
+  const click = thumb.fire('click');
+  await tick();
+  assert.equal(issued, 1);
+  assert.deepEqual(opened, []);
+  finishTicket();
+  await Promise.all([firstClick, click]);
+  assert.deepEqual(opened, ['https://cpr.example.test/cb?state=1&id=' + sample.id]);
+  assert.equal(issued, 2);
+  finishTicket();
+  await tick();
+  await ui.advance(295_000);
+  assert.equal(issued, 3);
+  finishTicket();
+  await tick();
+  const next = thumb.fire('click');
+  assert.equal(opened[1], 'https://cpr.example.test/cb?state=3&id=' + sample.id);
+  await next;
+  ui.close();
+});
+
+test('thumbnail playback copies the link on HTTP or host refusal and offers a manual fallback', async () => {
+  const sample = archivedRecord(1, '<svg></svg>');
+  for (const [origin, openExternal, clipboardAllowed] of [
+    ['http://127.0.0.1:3217', () => assert.fail('HTTP must not call the host opener'), true],
+    ['https://cpr.example.test', () => { throw new Error('Host refused'); }, true],
+    ['https://cpr.example.test', undefined, true],
+    ['https://cpr.example.test', undefined, false],
+  ]) {
+    const url = origin + '/cb';
+    const copied = [];
+    const bridge = playbackFixture(sample, { callbackTicket: async () => ({ callbackUrl: url }), openExternal });
+    const ui = await page({ bridge, clipboard: { async writeText(text) {
+      if (!clipboardAllowed) throw new Error('Clipboard unavailable');
+      copied.push(text);
+    } } });
+    const actions = ui.elements.get('history-rows').children[0].children[5].children[0].children;
+    await actions[0].fire('click');
+    assert.equal(ui.elements.get('preview-dialog').open, false);
+    const hint = ui.elements.get('history-hint').textContent;
+    const link = url + '?id=' + sample.id;
+    if (clipboardAllowed) {
+      assert.deepEqual(copied, [link]);
+      assert.equal(hint, '已复制一次性播放链接，请粘贴到新标签页打开');
+    } else {
+      assert.ok(hint.includes(link));
+      await actions[1].fire('click');
+      assert.equal(ui.elements.get('dialog-source').textContent, sample.source);
+    }
+    ui.close();
+  }
+  const bridge = playbackFixture(sample, { callbackTicket: async () => { throw new Error('Ticket unavailable'); } });
+  const ui = await page({ bridge });
+  await ui.elements.get('history-rows').children[0].children[5].children[0].children[0].fire('click');
+  assert.equal(ui.elements.get('preview-dialog').open, true);
+  ui.close();
 });

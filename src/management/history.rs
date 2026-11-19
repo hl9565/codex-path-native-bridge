@@ -152,14 +152,17 @@ pub(super) fn scheduled_id(slot_ms: u64) -> String {
     format!("scheduled-{slot_ms}")
 }
 
+pub(super) fn scheduled_plan_id(plan_id: &str, slot_ms: u64) -> String {
+    format!("scheduled-{plan_id}-{slot_ms}")
+}
+
 impl Record {
     fn is_valid(&self) -> bool {
         let id_valid = match (self.trigger, self.scheduled_at_ms) {
             (Trigger::Manual, None) => valid_manual_id(&self.id),
             (Trigger::Scheduled, Some(slot)) => {
-                self.id == scheduled_id(slot)
-                    && slot <= self.started_at_ms
-                    && slot.is_multiple_of(60_000)
+                slot <= self.started_at_ms
+                    && scheduled_id_parts(&self.id).is_some_and(|(_, id_slot)| id_slot == slot)
             }
             (Trigger::Refined, None) => valid_refinement_id(&self.id) && self.refinement.is_some(),
             _ => false,
@@ -258,11 +261,30 @@ pub(super) fn valid_manual_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+pub(super) const DEFAULT_PLAN_ID: &str = "default";
+
+pub(super) fn valid_plan_id(id: &str) -> bool {
+    (1..=16).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+pub(super) fn scheduled_id_parts(id: &str) -> Option<(&str, u64)> {
+    let suffix = id.strip_prefix("scheduled-")?;
+    let (plan_id, slot) = suffix.split_once('-').unwrap_or((DEFAULT_PLAN_ID, suffix));
+    if !valid_plan_id(plan_id)
+        || !slot.bytes().all(|byte| byte.is_ascii_digit())
+        || (slot.len() > 1 && slot.starts_with('0'))
+    {
+        return None;
+    }
+    let slot = slot.parse::<u64>().ok()?;
+    slot.is_multiple_of(60_000).then_some((plan_id, slot))
+}
+
 pub(super) fn valid_scheduled_id(id: &str) -> bool {
-    id.strip_prefix("scheduled-").is_some_and(|slot| {
-        slot.parse::<u64>()
-            .is_ok_and(|slot| id == scheduled_id(slot) && slot.is_multiple_of(60_000))
-    })
+    scheduled_id_parts(id).is_some()
 }
 
 pub(super) fn valid_id(id: &str) -> bool {
@@ -305,4 +327,42 @@ fn list_entry(mut record: Record, complete: bool) -> Result<Value, PluginFault> 
     let mut value = serde_json::to_value(record).map_err(|_| invalid())?;
     value["hasSource"] = json!(has_source);
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduled_records_validate_both_id_formats_and_their_slot() {
+        let slot = 120_000;
+        for id in [scheduled_id(slot), scheduled_plan_id("a0", slot)] {
+            let mut record = Record {
+                id,
+                trigger: Trigger::Scheduled,
+                scheduled_at_ms: Some(slot),
+                started_at_ms: slot,
+                model: "fixture-model".into(),
+                effort: "auto".into(),
+                verbosity: "auto".into(),
+                ..Record::default()
+            };
+            assert!(record.is_valid());
+            record.scheduled_at_ms = Some(60_000);
+            assert!(!record.is_valid());
+            record.scheduled_at_ms = Some(slot);
+            record.started_at_ms = slot - 1;
+            assert!(!record.is_valid());
+        }
+        for id in [
+            "scheduled-PLAN-120000",
+            "scheduled-dash-id-120000",
+            "scheduled-abcdefghijklmnopq-120000",
+            "scheduled-00120000",
+            "scheduled-a0-120001",
+            "scheduled-a0-18446744073709600000",
+        ] {
+            assert!(!valid_scheduled_id(id), "{id}");
+        }
+    }
 }

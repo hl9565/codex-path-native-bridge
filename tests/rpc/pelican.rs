@@ -17,6 +17,7 @@ const SVG: &str = "<svg viewBox='0 0 12 12'><circle r='2'/></svg>";
 const ARCHIVE: &str = "pelican-archive";
 const INDEX: &str = "pelican-archive-index";
 const REFINE: &str = "pelican-refine";
+const SCHEDULE: &str = "pelican-schedule";
 const RAF_DRAFT: &str = "<!doctype html><html><body><svg viewBox='0 0 800 450'><g id='w'><circle r='20'/></g></svg><script>function t(){requestAnimationFrame(t);document.getElementById('w');}</script></body></html>";
 const TRUNCATED_DRAFT: &str = "<!doctype html><html><body><svg viewBox='0 0 800 450'><circle r='20'/></svg><script>requestAnimationFrame(()=>{";
 const NO_SVG_TEXT: &str = "Sorry, no SVG diagram generated.";
@@ -57,7 +58,7 @@ impl ModelReply {
 #[derive(Default)]
 struct Fixture {
     state: BTreeMap<(String, String), (u64, Value)>,
-    issued_slots: BTreeSet<u64>,
+    issued_slots: BTreeSet<(String, u64)>,
     reject_next_claim: bool,
     reject_next_plan_claim: bool,
     reject_generation: bool,
@@ -74,9 +75,9 @@ impl Fixture {
     fn plan(&mut self) -> &mut Value {
         &mut self
             .state
-            .get_mut(&("pelican-schedule".into(), "plan".into()))
+            .get_mut(&(SCHEDULE.into(), "plan".into()))
             .unwrap()
-            .1
+            .1["plans"][0]
     }
 
     fn callback(
@@ -103,11 +104,16 @@ impl Fixture {
                         "state version conflicts",
                     ));
                 }
-                if key.0 == "pelican-schedule"
+                if key.0 == SCHEDULE
                     && key.1 == "plan"
-                    && !params["value"]["lastClaimedSlotMs"].is_null()
+                    && params["value"]["plans"].as_array().is_some_and(|plans| {
+                        plans.iter().any(|plan| !plan["pendingEnqueue"].is_null())
+                    })
                     && std::mem::take(&mut self.reject_next_plan_claim)
                 {
+                    let (version, value) = self.state.get_mut(&key).unwrap();
+                    *version += 1;
+                    value["plans"][0]["name"] = json!("Concurrent edit");
                     return Err(PluginFault::new(
                         ErrorCode::Conflict,
                         "fixture plan changed concurrently",
@@ -130,7 +136,7 @@ impl Fixture {
                         "lost final index write",
                     ));
                 }
-                if key.0 == ARCHIVE || key.0 == REFINE {
+                if key.0 == ARCHIVE || key.0 == REFINE || key.0 == SCHEDULE {
                     assert!(serde_json::to_vec(&params["value"]).unwrap().len() <= 48 * 1024);
                 }
                 if key.0 == ARCHIVE {
@@ -167,11 +173,12 @@ impl Fixture {
             }
             host::MODELS_LIST => {
                 assert_eq!(params["client_key_id"], KEY);
-                json!({"models": ["fixture-model"]})
+                json!({"models": ["fixture-model", "fixture-second-model"]})
             }
             host::MODEL_EXECUTE_STREAM => {
                 assert_eq!(params["client_key_id"], KEY);
-                assert_eq!(params["model"], "fixture-model");
+                let model = params["model"].as_str().unwrap();
+                assert!(matches!(model, "fixture-model" | "fixture-second-model"));
                 assert_eq!(params["protocol"], "openai");
                 assert_eq!(params["operation"], "generate");
                 assert!(params["account_id"].is_null());
@@ -185,13 +192,17 @@ impl Fixture {
                     .0;
                 let input: Value = serde_json::from_slice(payload).unwrap();
                 let mut expected = json!({
-                    "model": "fixture-model", "stream": true, "store": false, "tools": [],
+                    "model": model, "stream": true, "store": false, "tools": [],
                     "reasoning": {"effort": "high"},
                     "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
                 });
                 assert!(self.stream_batches.is_empty());
                 let active = &self.state[&(REFINE.into(), "job".into())].1["active"];
-                assert_eq!(active["phase"]["state"], "running", "claim precedes dispatch");
+                assert_eq!(
+                    active["phase"]["state"], "running",
+                    "claim precedes dispatch"
+                );
+                assert_eq!(active["selection"]["model"], model);
                 let verbosity = active["selection"]["verbosity"].as_str().unwrap_or("auto");
                 if verbosity != "auto" {
                     expected["text"] = json!({"verbosity": verbosity});
@@ -200,9 +211,12 @@ impl Fixture {
                 if let Some(slot) = active["selection"]["scheduledAtMs"].as_u64()
                     && active["rounds"].as_array().unwrap().is_empty()
                 {
+                    let plan = active["selection"]["scheduledPlanId"]
+                        .as_str()
+                        .unwrap_or("default");
                     assert!(
-                        self.issued_slots.insert(slot),
-                        "the same slot dispatched twice"
+                        self.issued_slots.insert((plan.to_owned(), slot)),
+                        "the same plan and slot dispatched twice"
                     );
                 }
                 let completed = active["rounds"].as_array().unwrap().len();
@@ -529,7 +543,7 @@ async fn manual_and_scheduled_queue_concurrently_without_starvation_and_keep_dra
     assert_eq!(done["queue"][0]["trigger"], "scheduled");
     let (_, sched_queued) = fixture.management(&mut host, "/schedule", None).await;
     assert!(
-        sched_queued["runningSinceMs"].is_null(),
+        sched_queued["plans"][0]["runningSinceMs"].is_null(),
         "queued scheduled task must not report runningSinceMs before it starts"
     );
 
@@ -631,6 +645,17 @@ async fn archive_pages_survive_restart_and_open_legacy_and_chunked_source() {
     assert!(last["records"][9]["source"].is_null());
     assert_eq!(last["records"][9]["hasSource"], true);
     assert_eq!(last["records"][10]["trigger"], "manual");
+    let (status, content_type, playback) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            &format!("state=ticket&id={:032x}", 1),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "text/html; charset=utf-8");
+    assert!(playback.contains(&large_source));
     for (id, source) in [(0, SVG), (1, large_source.as_str())] {
         let path = format!("/history/record?id={id:032x}");
         let (status, detail) = fixture.management(&mut host, &path, None).await;
@@ -720,8 +745,9 @@ async fn quota_keeps_older_results_and_a_scheduled_save_failure_releases_the_cla
     fixture.tick(&mut host).await;
     fixture.tick(&mut host).await;
     assert_eq!(fixture.issued_slots.len(), 1);
-    let issued = *fixture.issued_slots.first().unwrap();
+    let issued = fixture.issued_slots.first().unwrap().1;
     let (_, plan) = fixture.management(&mut host, "/schedule", None).await;
+    let plan = &plan["plans"][0];
     assert!(plan["runningSinceMs"].is_null());
     assert!(plan["nextRunAtMs"].as_u64().unwrap() > issued);
     assert_eq!(
@@ -809,7 +835,7 @@ async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
         ..Fixture::default()
     };
     let (_, status) = fixture.management(&mut host, "/schedule", None).await;
-    assert!(status["settings"].is_null());
+    assert_eq!(status, json!({"plans": [], "maxPlans": 10}));
     let mut invalid = settings(true);
     invalid["cron"] = json!("60 * * * *");
     assert_eq!(
@@ -828,21 +854,47 @@ async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
             .0,
         400
     );
-    assert!(fixture.state.is_empty());
+    for (field, value) in [
+        ("id", json!("Upper")),
+        ("name", json!("tab\tname")),
+        ("name", json!("x".repeat(65))),
+        ("unexpected", json!(true)),
+    ] {
+        let mut input = settings(true);
+        input[field] = value;
+        assert_eq!(
+            fixture
+                .management(&mut host, "/schedule", Some(&input))
+                .await
+                .0,
+            400
+        );
+    }
+    let mut missing = settings(true);
+    missing["id"] = json!("missing");
     assert_eq!(
         fixture
-            .management(&mut host, "/schedule", Some(&settings(false)))
+            .management(&mut host, "/schedule", Some(&missing))
             .await
             .0,
-        200
+        404
     );
-    fixture.tick(&mut host).await;
-    assert!(fixture.issued_slots.is_empty());
-    let (status, saved) = fixture
-        .management(&mut host, "/schedule", Some(&settings(true)))
+    assert!(fixture.state.is_empty());
+    let (status, created) = fixture
+        .management(&mut host, "/schedule", Some(&settings(false)))
         .await;
     assert_eq!(status, 200);
-    assert!(saved["nextRunAtMs"].as_u64().is_some());
+    fixture.tick(&mut host).await;
+    assert!(fixture.issued_slots.is_empty());
+    let mut edit = settings(true);
+    edit["id"] = created["savedId"].clone();
+    let (status, saved) = fixture
+        .management(&mut host, "/schedule", Some(&edit))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(saved["plans"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["savedId"], created["savedId"]);
+    assert!(saved["plans"][0]["nextRunAtMs"].as_u64().is_some());
     assert!(
         fixture.issued_slots.is_empty(),
         "saving a rule does not execute it"
@@ -851,25 +903,23 @@ async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
     // The fixture makes an enabled plan eligible now without waiting for the wall clock minute.
     fixture.plan()["armedAfterSlotMs"] = json!(0);
     fixture.reject_next_plan_claim = true;
-    fixture.tick(&mut host).await;
-    assert!(
-        fixture.issued_slots.is_empty() && !fixture.state.contains_key(&(REFINE.into(), "job".into())),
-        "a lost plan CAS must not leave a stale scheduled task in the queue"
-    );
     fixture.reject_next_claim = true;
     fixture.tick(&mut host).await;
+    assert_eq!(fixture.plan()["name"], "Concurrent edit");
+    assert!(fixture.plan()["pendingEnqueue"].is_null());
     assert!(
         fixture.issued_slots.is_empty(),
         "a failed CAS must not dispatch"
     );
     fixture.tick(&mut host).await;
     assert_eq!(fixture.issued_slots.len(), 1);
-    let issued_slot = *fixture.issued_slots.first().unwrap();
+    let (plan_id, issued_slot) = fixture.issued_slots.first().unwrap().clone();
     let (_, done_plan) = fixture.management(&mut host, "/schedule", None).await;
-    assert!(done_plan["runningSinceMs"].is_null());
+    assert!(done_plan["plans"][0]["runningSinceMs"].is_null());
     let (_, history) = fixture.management(&mut host, "/history", None).await;
     let record = &history["records"][0];
     assert_eq!(record["trigger"], "scheduled");
+    assert_eq!(record["id"], format!("scheduled-{plan_id}-{issued_slot}"));
     assert_eq!(record["scheduledAtMs"], issued_slot);
     assert_eq!(record["verbosity"], "medium");
     assert_eq!(record["gatewayRequestId"], REQUEST);
@@ -887,8 +937,8 @@ async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
     let (_, paused) = fixture
         .management(&mut restarted, "/schedule/pause", Some(&json!({})))
         .await;
-    assert_eq!(paused["settings"]["enabled"], false);
-    assert!(paused["nextRunAtMs"].is_null());
+    assert_eq!(paused["plans"][0]["settings"]["enabled"], false);
+    assert!(paused["plans"][0]["nextRunAtMs"].is_null());
     let dispatched = fixture.issued_slots.len();
     fixture.tick(&mut restarted).await;
     assert_eq!(fixture.issued_slots.len(), dispatched);
@@ -902,14 +952,15 @@ async fn rejected_and_abandoned_slots_record_failure_without_replaying() {
         reject_generation: true,
         ..Fixture::default()
     };
-    assert_eq!(
-        fixture
-            .management(&mut host, "/schedule", Some(&settings(true)))
-            .await
-            .0,
-        200
+    fixture.state.insert(
+        (SCHEDULE.into(), "plan".into()),
+        (
+            1,
+            json!({
+                "settings": settings(true), "keyName": "Fixture Key", "armedAfterSlotMs": 0,
+            }),
+        ),
     );
-    fixture.plan()["armedAfterSlotMs"] = json!(0);
     fixture.tick(&mut host).await;
     fixture.tick(&mut host).await;
     let (_, history) = fixture.management(&mut host, "/history", None).await;
@@ -955,8 +1006,14 @@ async fn rejected_and_abandoned_slots_record_failure_without_replaying() {
         ),
     );
     fixture.plan()["settings"]["enabled"] = json!(false);
+    let (status, _) = fixture
+        .management(&mut host, "/schedule", Some(&settings(false)))
+        .await;
+    assert_eq!(status, 200);
     let (_, running_plan) = fixture.management(&mut host, "/schedule", None).await;
-    assert_eq!(running_plan["runningSinceMs"], inflight_recent);
+    assert_eq!(running_plan["plans"][0]["id"], "default");
+    assert_eq!(running_plan["plans"][0]["runningSinceMs"], inflight_recent);
+    assert!(running_plan["plans"][1]["runningSinceMs"].is_null());
     fixture.tick(&mut host).await;
     assert_eq!(fixture.issued_slots.len(), 1, "active lease must not replay");
 
@@ -1009,7 +1066,250 @@ async fn rejected_and_abandoned_slots_record_failure_without_replaying() {
         .find(|r| r["scheduledAtMs"] == recovered_slot)
         .unwrap();
     assert_eq!(recovered["outcome"], "generated");
+    assert_eq!(
+        recovered["id"],
+        format!("scheduled-default-{recovered_slot}")
+    );
     assert_eq!(recovered["source"], SVG);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_plan_migrates_all_fields_and_recovers_without_replaying_the_slot() {
+    let mut host = start().await;
+    let mut fixture = Fixture::default();
+    let slot = (Utc::now().timestamp_millis() as u64 / 60_000 - 1) * 60_000;
+    let pending = json!({
+        "slotMs": slot, "startedAtMs": slot, "clientKeyId": KEY, "keyName": "Fixture Key",
+        "model": "fixture-model", "effort": "high",
+    });
+    let mut pending_enqueue = pending.clone();
+    pending_enqueue["verbosity"] = json!("medium");
+    let mut settings = settings(false);
+    settings.as_object_mut().unwrap().remove("verbosity");
+    let warning = json!({"slotMs": slot - 60_000, "reason": "too_large"});
+    let legacy = json!({
+        "settings": settings, "keyName": "Fixture Key", "armedAfterSlotMs": slot - 60_000,
+        "lastClaimedSlotMs": slot, "pending": pending, "pendingEnqueue": pending_enqueue,
+        "historySaveFailure": warning,
+    });
+    fixture
+        .state
+        .insert((SCHEDULE.into(), "plan".into()), (1, legacy.clone()));
+    let (status, response) = fixture.management(&mut host, "/schedule", None).await;
+    assert_eq!(status, 200);
+    let entry = &response["plans"][0];
+    assert_eq!(entry["id"], "default");
+    assert_eq!(entry["name"], "");
+    assert_eq!(entry["keyName"], "Fixture Key");
+    assert_eq!(entry["settings"]["verbosity"], "auto");
+    assert_eq!(entry["runningSinceMs"], slot);
+    assert_eq!(entry["historySaveFailure"], warning);
+
+    fixture.tick(&mut host).await;
+    let mut migrated = legacy;
+    migrated["id"] = json!("default");
+    migrated["settings"]["verbosity"] = json!("auto");
+    assert_eq!(*fixture.plan(), migrated);
+    assert!(
+        fixture.refinements.is_empty(),
+        "fresh legacy lease blocks dispatch"
+    );
+
+    let mut edit = settings.clone();
+    edit["id"] = json!("default");
+    edit["name"] = json!("Migrated plan");
+    let (status, edited) = fixture
+        .management(&mut host, "/schedule", Some(&edit))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(edited["savedId"], "default");
+    for field in [
+        "lastClaimedSlotMs",
+        "pending",
+        "pendingEnqueue",
+        "historySaveFailure",
+    ] {
+        assert_eq!(fixture.plan()[field], migrated[field]);
+    }
+
+    assert_eq!(
+        fixture
+            .management(
+                &mut host,
+                "/schedule/delete",
+                Some(&json!({"id": "default"}))
+            )
+            .await
+            .0,
+        409
+    );
+    // Model the same legacy-owned slot after restart with an expired lease.
+    let previous_slot = slot - 480_000;
+    fixture.plan()["pending"]["slotMs"] = json!(previous_slot);
+    fixture.plan()["pending"]["startedAtMs"] = json!(previous_slot);
+    fixture.plan()["pendingEnqueue"]["slotMs"] = json!(previous_slot);
+    fixture.tick(&mut host).await;
+    assert!(fixture.refinements.is_empty());
+    assert!(fixture.plan()["pending"].is_null());
+    assert!(fixture.plan()["pendingEnqueue"].is_null());
+    let (_, page) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(page["total"], 1);
+    assert_eq!(
+        page["records"][0]["id"],
+        format!("scheduled-{previous_slot}")
+    );
+    assert_eq!(page["records"][0]["issue"], "interrupted");
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn ten_plans_claim_the_same_minute_with_independent_outcomes_and_manual_headroom() {
+    let mut host = start().await;
+    let mut fixture = Fixture {
+        model_replies: VecDeque::from([ModelReply::Draft, ModelReply::Draft, ModelReply::Draft]),
+        ..Fixture::default()
+    };
+    let mut ids = Vec::new();
+    for index in 0..10 {
+        let mut input = settings(true);
+        input["name"] = json!(format!("Plan {index}"));
+        if index == 1 {
+            input["model"] = json!("fixture-second-model");
+        }
+        let (status, saved) = fixture
+            .management(&mut host, "/schedule", Some(&input))
+            .await;
+        assert_eq!(status, 200);
+        let id = saved["savedId"].as_str().unwrap().to_owned();
+        assert_eq!(id.len(), 8);
+        assert!(
+            id.bytes()
+                .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+        );
+        assert!(!ids.contains(&id));
+        ids.push(id);
+    }
+    assert_eq!(
+        fixture
+            .management(&mut host, "/schedule", Some(&settings(true)))
+            .await
+            .0,
+        409
+    );
+
+    let (_, paused_one) = fixture
+        .management(&mut host, "/schedule/pause", Some(&json!({"id": ids[0]})))
+        .await;
+    assert_eq!(paused_one["plans"][0]["settings"]["enabled"], false);
+    assert_eq!(paused_one["plans"][1]["settings"]["enabled"], true);
+    let (_, reenabled) = fixture
+        .management(
+            &mut host,
+            "/schedule/pause",
+            Some(&json!({"id": ids[0], "enabled": true})),
+        )
+        .await;
+    assert_eq!(reenabled["plans"][0]["settings"]["enabled"], true);
+
+    let (_, manual) = refinement(1);
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&manual))
+            .await
+            .0,
+        200
+    );
+    let schedule = &mut fixture
+        .state
+        .get_mut(&(SCHEDULE.into(), "plan".into()))
+        .unwrap()
+        .1;
+    for plan in schedule["plans"].as_array_mut().unwrap() {
+        plan["armedAfterSlotMs"] = json!(0);
+    }
+    fixture.tick(&mut host).await;
+    let (_, queue) = fixture.management(&mut host, "/refine", None).await;
+    let queued = queue["queue"].as_array().unwrap();
+    assert_eq!(queued.len(), 10);
+    let slot = fixture.plan()["lastClaimedSlotMs"].as_u64().unwrap();
+    for (item, id) in queued.iter().zip(&ids) {
+        assert_eq!(item["id"], format!("scheduled-{id}-{slot}"));
+    }
+    assert_eq!(queued[1]["model"], "fixture-second-model");
+    let (_, paused_all) = fixture
+        .management(&mut host, "/schedule/pause", Some(&json!({})))
+        .await;
+    assert!(
+        paused_all["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|plan| plan["settings"]["enabled"] == false)
+    );
+    for n in 2..=10 {
+        let (_, manual) = refinement(n);
+        let expected_status = if n < 10 { 200 } else { 409 };
+        assert_eq!(
+            fixture
+                .management(&mut host, "/refine", Some(&manual))
+                .await
+                .0,
+            expected_status
+        );
+    }
+    let (_, full_queue) = fixture.management(&mut host, "/refine", None).await;
+    assert_eq!(full_queue["queuedCount"], 18);
+
+    // An overlapping slot for the first plan is dropped even when retried from durable state.
+    let overlap = slot + 60_000;
+    fixture.plan()["lastClaimedSlotMs"] = json!(overlap);
+    fixture.plan()["pendingEnqueue"] = json!({
+        "slotMs": overlap, "startedAtMs": overlap, "clientKeyId": KEY,
+        "keyName": "Fixture Key", "model":"fixture-model", "effort":"high",
+    });
+    fixture.data_writes_before_full = Some(0);
+    fixture.tick(&mut host).await;
+    assert!(fixture.plan()["pendingEnqueue"].is_null());
+    fixture.data_writes_before_full = None;
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.refinements[1]["model"], "fixture-model");
+    assert_eq!(fixture.refinements[2]["model"], "fixture-second-model");
+    assert_eq!(
+        fixture.issued_slots,
+        BTreeSet::from([(ids[0].clone(), slot), (ids[1].clone(), slot)])
+    );
+    let (_, status) = fixture.management(&mut host, "/schedule", None).await;
+    assert_eq!(
+        status["plans"][0]["historySaveFailure"],
+        json!({"slotMs": slot, "reason": "full"})
+    );
+    assert!(status["plans"][1]["historySaveFailure"].is_null());
+
+    let delete = json!({"id": ids[1]});
+    let (status, remaining) = fixture
+        .management(&mut host, "/schedule/delete", Some(&delete))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(remaining["plans"].as_array().unwrap().len(), 9);
+    assert_eq!(
+        fixture
+            .management(&mut host, "/schedule/delete", Some(&delete))
+            .await
+            .0,
+        404
+    );
+    let (status, content_type, html) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            &format!("state=ticket&id=scheduled-{}-{slot}", ids[1]),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "text/html; charset=utf-8");
+    assert!(html.contains(SVG));
     host.shutdown().await;
 }
 

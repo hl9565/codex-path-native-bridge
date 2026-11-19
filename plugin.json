@@ -3,8 +3,8 @@
   "publisher": "selfhosted",
   "name": "omp-native-bridge",
   "displayName": "Pelican Test",
-  "version": "0.8.0",
-  "description": "Run single, scheduled, or multi-round SVG pelican tests.",
+  "version": "0.9.0",
+  "description": "Run manual and scheduled SVG pelican tests.",
   "license": "Apache-2.0",
   "engines": {
     "codex-proxy-rs": ">=3.44.0, <4.0.0"
@@ -48,8 +48,8 @@
       "schemaVersion": 1,
       "schema": { "type": "object" },
       "maximumRecords": 1,
-      "maximumBytes": 8192,
-      "maximumValueBytes": 8192
+      "maximumBytes": 49152,
+      "maximumValueBytes": 49152
     },
     {
       "namespace": "pelican-refine",

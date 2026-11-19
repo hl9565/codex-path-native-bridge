@@ -18,7 +18,9 @@ const NAMESPACE: &str = "pelican-refine";
 const KEY: &str = "job";
 const MAX_ROUNDS: usize = 1;
 const LEGACY_MAX_ROUNDS: usize = 3;
-const MAX_QUEUE: usize = 8;
+const MAX_MANUAL_QUEUE: usize = 8;
+const MAX_QUEUE: usize = MAX_MANUAL_QUEUE + schedule::MAX_PLANS;
+pub(super) const QUEUE_FULL: &str = "pelican refine queue full";
 const CAS_RETRIES: usize = 12;
 const MAX_SAVE_ATTEMPTS: u8 = 2;
 const LEASE_MS: u64 = 420_000;
@@ -50,9 +52,20 @@ struct Selection {
     trigger: Option<Trigger>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scheduled_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scheduled_plan_id: Option<String>,
 }
 
 impl Selection {
+    fn plan_id(&self) -> Option<&str> {
+        if self.effective_trigger() != Trigger::Scheduled {
+            return None;
+        }
+        self.scheduled_plan_id
+            .as_deref()
+            .or_else(|| history::scheduled_id_parts(&self.id).map(|(plan_id, _)| plan_id))
+    }
+
     fn effective_trigger(&self) -> Trigger {
         if let Some(trigger) = self.trigger {
             return trigger;
@@ -238,6 +251,7 @@ impl Job {
 }
 
 pub(super) struct ScheduleTask {
+    pub plan_id: String,
     pub slot_ms: u64,
     pub started_at_ms: u64,
     pub client_key_id: String,
@@ -251,13 +265,18 @@ pub(super) async fn status(host: &HostClient) -> Result<Value, PluginFault> {
     Ok(read_state(host).await?.0.response())
 }
 
-pub(super) async fn active_scheduled_since_ms(host: &HostClient) -> Result<Option<u64>, PluginFault> {
+pub(super) async fn active_scheduled_since_ms(
+    host: &HostClient,
+) -> Result<Option<(String, u64)>, PluginFault> {
     let (state, _) = read_state(host).await?;
-    Ok(state
-        .active
-        .as_ref()
-        .filter(|job| job.is_busy() && job.selection.effective_trigger() == Trigger::Scheduled)
-        .map(|job| job.record.started_at_ms))
+    Ok(state.active.and_then(|job| {
+        let since_ms = match job.phase {
+            Phase::Running { since_ms } => since_ms,
+            Phase::Saving { .. } => job.record.started_at_ms,
+            _ => return None,
+        };
+        Some((job.selection.plan_id()?.to_owned(), since_ms))
+    }))
 }
 
 pub(super) async fn start(host: &HostClient, payload: &[u8]) -> Result<Value, PluginFault> {
@@ -303,6 +322,7 @@ pub(super) async fn start(host: &HostClient, payload: &[u8]) -> Result<Value, Pl
             verbosity: req.verbosity,
             trigger: Some(trigger),
             scheduled_at_ms: None,
+            scheduled_plan_id: None,
         },
         started_at_ms: now_ms(),
         client_key_name: Some(key.name).filter(|name| identity::valid_text(name, 512)),
@@ -325,7 +345,7 @@ pub(super) async fn start(host: &HostClient, payload: &[u8]) -> Result<Value, Pl
                 .iter()
                 .filter(|item| item.selection.effective_trigger() != Trigger::Scheduled)
                 .count();
-            if manual_queued >= MAX_QUEUE - 1 || state.queue.len() >= MAX_QUEUE {
+            if manual_queued >= MAX_MANUAL_QUEUE || state.queue.len() >= MAX_QUEUE {
                 return Err(queue_full());
             }
             state.queue.push(task.clone());
@@ -343,10 +363,9 @@ pub(super) async fn enqueue_scheduled(
     host: &HostClient,
     task: ScheduleTask,
 ) -> Result<(), PluginFault> {
-    let id = history::scheduled_id(task.slot_ms);
-    if history::contains(host, &id).await? {
-        return Ok(());
-    }
+    let id = history::scheduled_plan_id(&task.plan_id, task.slot_ms);
+    let legacy_id =
+        (task.plan_id == history::DEFAULT_PLAN_ID).then(|| history::scheduled_id(task.slot_ms));
     let queued = QueuedTask {
         selection: Selection {
             id: id.clone(),
@@ -356,37 +375,44 @@ pub(super) async fn enqueue_scheduled(
             verbosity: task.verbosity,
             trigger: Some(Trigger::Scheduled),
             scheduled_at_ms: Some(task.slot_ms),
+            scheduled_plan_id: Some(task.plan_id.clone()),
         },
         started_at_ms: task.started_at_ms.max(task.slot_ms),
         client_key_name: task.key_name,
     };
     for _ in 0..CAS_RETRIES {
         let (mut state, version) = read_state(host).await?;
-        if state.has_id(&id) {
+        if state.has_id(&id) || legacy_id.as_ref().is_some_and(|id| state.has_id(id)) {
             return Ok(());
         }
-        let active_scheduled = state
+        let same_plan = |selection: &Selection| selection.plan_id() == Some(task.plan_id.as_str());
+        let active_same_plan = state
             .active
             .as_ref()
-            .is_some_and(|job| job.is_busy() && job.selection.effective_trigger() == Trigger::Scheduled);
-        let queue_scheduled = state
+            .is_some_and(|job| job.is_busy() && same_plan(&job.selection));
+        let queued_same_plan = state.queue.iter().any(|item| same_plan(&item.selection));
+        if active_same_plan || queued_same_plan || history::contains(host, &id).await? {
+            return Ok(());
+        }
+        if let Some(legacy_id) = &legacy_id
+            && history::contains(host, legacy_id).await?
+        {
+            return Ok(());
+        }
+        if !schedule::has_pending_enqueue(host, &task.plan_id, task.slot_ms).await? {
+            return Ok(());
+        }
+        let scheduled_queued = state
             .queue
             .iter()
-            .any(|item| item.selection.effective_trigger() == Trigger::Scheduled);
-        if active_scheduled || queue_scheduled {
-            return Ok(());
-        }
-        if state
-            .active
-            .as_ref()
-            .is_none_or(|job| !job.is_busy())
-            && state.queue.is_empty()
-        {
+            .filter(|item| item.selection.effective_trigger() == Trigger::Scheduled)
+            .count();
+        if state.active.as_ref().is_none_or(|job| !job.is_busy()) && state.queue.is_empty() {
             state.active = Some(queued.clone().into_job());
-        } else if state.queue.len() < MAX_QUEUE {
+        } else if scheduled_queued < schedule::MAX_PLANS && state.queue.len() < MAX_QUEUE {
             state.queue.push(queued.clone());
         } else {
-            return Ok(());
+            return Err(queue_full());
         }
         match write_state(host, version, &state).await {
             Ok(_) => return Ok(()),
@@ -798,10 +824,10 @@ async fn archive(host: &HostClient, mut job: Job, end: RefinementEnd) -> Result<
             return Ok(());
         }
     };
-    if job.selection.effective_trigger() == Trigger::Scheduled
+    if let Some(plan_id) = job.selection.plan_id()
         && let Some(slot_ms) = job.selection.scheduled_at_ms
     {
-        schedule::record_save_outcome(host, slot_ms, failure_reason).await?;
+        schedule::record_save_outcome(host, plan_id, slot_ms, failure_reason).await?;
     }
     job.phase = Phase::Done { end, archive };
     commit_active_job(host, &job, false).await?;
@@ -866,7 +892,7 @@ async fn load_document(host: &HostClient, document: Document) -> Result<String, 
 }
 
 pub(super) fn valid_job_id(id: &str) -> bool {
-    history::valid_manual_id(id) || history::valid_refinement_id(id) || history::valid_scheduled_id(id)
+    history::valid_id(id)
 }
 
 async fn read_state(host: &HostClient) -> Result<(QueueState, Option<u64>), PluginFault> {
@@ -903,7 +929,7 @@ fn conflict() -> PluginFault {
 }
 
 fn queue_full() -> PluginFault {
-    PluginFault::new(ErrorCode::Conflict, "pelican refine queue full")
+    PluginFault::new(ErrorCode::Conflict, QUEUE_FULL)
 }
 
 #[cfg(test)]

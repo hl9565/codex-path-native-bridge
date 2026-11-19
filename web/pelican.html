@@ -87,6 +87,14 @@
     details[open] > .schedule-summary::after { transform: rotate(90deg); }
     .schedule-title { font-size: 14px; font-weight: 700; }
     .schedule-chip { color: var(--blue-ink); background: var(--soft); padding: 3px 8px; border-radius: 7px; font-size: 11px; }
+    .schedule-plans { display: grid; gap: 10px; border-top: 1px solid var(--line); padding: 14px 22px; }
+    .schedule-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .schedule-list:empty { display: none; }
+    .schedule-plan { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; overflow-wrap: anywhere; }
+    .schedule-plan-info { flex: 1 1 220px; min-width: 0; }
+    .schedule-plan-info p { margin: 4px 0 0; }
+    .schedule-plan-warning { color: var(--warning); font-size: 12px; }
+    .schedule-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; }
     .schedule-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; border-top: 1px solid var(--line); padding: 17px 22px; }
     .schedule-form input[type="text"] { width: 100%; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); font: inherit; }
     .schedule-help, .schedule-controls { grid-column: 1 / -1; }
@@ -97,7 +105,8 @@
     .history { margin-top: 18px; overflow: hidden; }
     .history-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px 14px; padding: 16px 22px; border-bottom: 1px solid var(--line); }
     .history-count { font-size: 11px; color: var(--blue-ink); background: var(--soft); padding: 2px 8px; border-radius: 7px; }
-    .history-hint, .record-secondary { font-size: 11px; color: var(--muted); }
+    .history-hint, .record-secondary { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+    #history-schedule-warning { color: var(--warning); white-space: pre-line; overflow-wrap: anywhere; }
     .history-pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 22px; border-top: 1px solid var(--line); }
     .history-pager button, .history-warning button { font-size: 12px; padding: 5px 9px; }
     .history-warning { margin: 0; padding: 9px 22px; border-bottom: 1px solid var(--line); font-size: 12px; }
@@ -211,6 +220,7 @@
       .history-heading { padding: 14px; }
       .refine { padding: 12px 14px; }
       .schedule-summary { padding: 10px 14px; }
+      .schedule-plans { padding: 12px 14px; }
       .schedule-form { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px; gap: 12px; }
       .history-table, .history-table tbody { display: block; }
       .history-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -309,7 +319,16 @@
 
   <details class="panel schedule" id="schedule-panel" hidden>
     <summary class="schedule-summary"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span class="schedule-title">定时测试</span><span id="schedule-state" class="schedule-chip">读取中</span></summary>
-    <form id="schedule-form" class="schedule-form">
+    <div class="schedule-plans">
+      <ul id="schedule-list" class="schedule-list" aria-label="定时计划"></ul>
+      <div class="schedule-controls">
+        <button id="schedule-add" class="connection-button" type="button" disabled>新增定时计划</button>
+        <button id="schedule-pause" class="connection-button" type="button" hidden>暂停全部</button>
+        <p id="schedule-status" class="schedule-status" role="status"></p>
+      </div>
+    </div>
+    <form id="schedule-form" class="schedule-form" hidden>
+      <div class="field"><label for="schedule-name">名称（可选）</label><input id="schedule-name" type="text" autocomplete="off"></div>
       <div class="field"><label for="schedule-key">Client Key</label><select id="schedule-key" required disabled><option value="">读取中…</option></select></div>
       <div class="field"><label for="schedule-model">模型</label><select id="schedule-model" required disabled><option value="">请选择 Client Key</option></select></div>
       <div class="field"><label for="schedule-effort">推理强度</label><select id="schedule-effort"><option value="auto">自动</option><option value="none">none</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
@@ -318,12 +337,11 @@
       <div class="field"><label for="schedule-timezone">时区</label><input id="schedule-timezone" type="text" list="schedule-timezones" placeholder="Asia/Shanghai" maxlength="80" autocomplete="off" required>
         <datalist id="schedule-timezones"><option value="Asia/Shanghai"></option><option value="UTC"></option><option value="America/Los_Angeles"></option></datalist>
       </div>
-      <p id="schedule-help" class="schedule-help">五段顺序：分、时、日、月、星期。示例：0 9 * * 1-5 表示所选时区的工作日 09:00。关闭页面后仍由 CPR 执行，错过的时间不补跑。</p>
+      <p id="schedule-help" class="schedule-help">五段顺序：分、时、日、月、星期。示例：0 9 * * 1-5 表示所选时区的工作日 09:00。关闭页面后仍由 CPR 执行，宿主停机错过的时间不补跑。</p>
       <div class="schedule-controls">
         <label><input id="schedule-enabled" type="checkbox"> 启用计划</label>
         <button id="schedule-save" class="primary-button" type="submit" disabled>保存计划</button>
-        <button id="schedule-pause" class="connection-button" type="button" hidden>暂停计划</button>
-        <p id="schedule-status" class="schedule-status" role="status"></p>
+        <button id="schedule-cancel" class="connection-button" type="button">取消编辑</button>
       </div>
     </form>
   </details>
@@ -370,7 +388,7 @@
       <button id="history-next" class="record-link" type="button">下一页</button>
     </nav>
   </section>
-  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.8.0</span></span><span>点击缩略图放大</span></footer>
+  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.9.0</span></span></footer>
 </main>
 <dialog id="preview-dialog" aria-labelledby="dialog-title">
   <div class="dialog-header">
@@ -437,7 +455,8 @@
     too_large: '结果超过保存上限，未保存', unconfirmed: '无法确认是否已保存到生成记录',
   };
   const refineId = /^refine-[a-f\d]{32}$/i;
-  const anyJobId = /^(?:[a-f\d]{32}|refine-[a-f\d]{32}|scheduled-\d+)$/i;
+  const manualId = /^[a-f\d]{32}$/i;
+  const scheduledId = /^scheduled-(?:[a-z0-9]{1,16}-)?(0|[1-9]\d{0,19})$/;
   const $ = id => document.getElementById(id);
   const bridge = window.codexProxyPlugin;
   const encoder = new TextEncoder();
@@ -461,6 +480,9 @@
   let renderedHistory;
   let openedRecord = null;
   let openIntent = 0;
+  let sparePreviewTicket = null;
+  let sparePreviewRequest = null;
+  let sparePreviewTimer = 0;
   let renderFrame = 0;
   let elapsedTimer = 0;
   let closed = false;
@@ -470,7 +492,8 @@
   let scheduleModelsVersion = 0;
   let scheduleModelLoading = false;
   let scheduleBusy = false;
-  let scheduleDirty = false;
+  let scheduleEditingId = null;
+  let renderedSchedule;
   let scheduleMessage = '';
   let scheduleError = false;
   let refinement = null;
@@ -640,7 +663,7 @@
 
   function applyRefinement(snapshot) {
     if (!snapshot || !Number.isSafeInteger(snapshot.maxRounds) || snapshot.maxRounds < 1
-      || (snapshot.job !== null && !anyJobId.test(snapshot.job?.id))) throw new Error('无法读取后台任务数据，请刷新页面。');
+      || (snapshot.job !== null && !anyJobId(snapshot.job?.id))) throw new Error('无法读取后台任务数据，请刷新页面。');
     const prior = refinement?.job;
     refinement = snapshot;
     const job = snapshot.job;
@@ -648,7 +671,8 @@
       && !historyOffset && !historyPaging) {
       historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
     }
-    if (job?.trigger === 'scheduled' && job?.status === 'done' && (prior?.status !== 'done' || prior.id !== job.id)) {
+    if ((job?.trigger === 'scheduled' || prior?.trigger === 'scheduled')
+      && (prior?.status !== job?.status || prior?.id !== job?.id)) {
       void refreshSchedule();
     }
   }
@@ -757,36 +781,81 @@
   }
 
   function scheduleControls() {
-    const config = scheduleSnapshot?.settings;
-    $('schedule-state').textContent = scheduleSnapshot === null ? (scheduleError ? '读取失败' : '读取中')
-      : scheduleSnapshot.runningSinceMs ? '执行中' : config?.enabled ? '已启用' : config ? '已暂停' : '未设置';
+    const plans = scheduleSnapshot?.plans || [];
+    const enabled = plans.filter(plan => plan.settings.enabled).length;
+    $('schedule-state').textContent = !scheduleSnapshot ? (scheduleError ? '读取失败' : '读取中')
+      : plans.some(plan => plan.runningSinceMs != null) ? '执行中'
+      : enabled ? '已启用 ' + enabled + ' / ' + plans.length + ' 个' : plans.length ? '全部已暂停' : '未设置';
+    $('schedule-add').disabled = scheduleBusy || !scheduleSnapshot || plans.length >= scheduleSnapshot.maxPlans;
+    $('schedule-pause').disabled = scheduleBusy;
+    $('schedule-pause').hidden = !enabled;
+    $('schedule-form').hidden = scheduleEditingId === null;
     $('schedule-key').disabled = scheduleBusy || !scheduleKeys.length;
     $('schedule-model').disabled = scheduleBusy || scheduleModelLoading || $('schedule-model').options.length < 2;
-    for (const id of ['schedule-effort', 'schedule-verbosity', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) $(id).disabled = scheduleBusy;
+    for (const id of ['schedule-name', 'schedule-effort', 'schedule-verbosity', 'schedule-cron',
+      'schedule-timezone', 'schedule-enabled', 'schedule-cancel']) $(id).disabled = scheduleBusy;
     $('schedule-save').disabled = scheduleBusy || scheduleModelLoading
       || !$('schedule-key').value || !$('schedule-model').value;
-    $('schedule-pause').disabled = scheduleBusy;
-    $('schedule-pause').hidden = !config?.enabled;
-    let next = '';
-    if (Number.isSafeInteger(scheduleSnapshot?.nextRunAtMs) && config?.timezone) {
-      try {
-        const format = new Intl.DateTimeFormat('zh-CN', {
-          dateStyle: 'medium', timeStyle: 'short', timeZone: config.timezone,
-        });
-        next = '下一次：' + format.format(scheduleSnapshot.nextRunAtMs) + ' (' + config.timezone + ')';
-      } catch {}
-    }
     const status = $('schedule-status');
     status.dataset.kind = scheduleError ? 'error' : 'info';
-    status.textContent = [scheduleMessage, next].filter(Boolean).join(' · ');
-    const failure = scheduleSnapshot?.historySaveFailure;
-    const warning = $('history-schedule-warning');
-    warning.hidden = !failure;
-    if (failure) {
-      const message = failure.reason === 'full' ? '存储已满，本轮结果未保存。'
-        : failure.reason === 'too_large' ? '本轮结果太大，未保存。' : '本轮结果未确认保存。';
-      warning.textContent = '定时测试 · ' + new Date(failure.slotMs).toLocaleString('zh-CN') + ' · ' + message;
+    status.textContent = scheduleMessage;
+
+    const signature = JSON.stringify([plans, scheduleBusy]);
+    if (signature === renderedSchedule) return;
+    renderedSchedule = signature;
+    $('schedule-list').replaceChildren(...plans.map(scheduleRow));
+    const warnings = plans.filter(plan => plan.historySaveFailure).map(plan =>
+      '定时测试 · ' + (plan.name || plan.settings.model) + ' · ' + scheduleWarning(plan));
+    $('history-schedule-warning').hidden = warnings.length === 0;
+    $('history-schedule-warning').textContent = warnings.join('\n');
+  }
+
+  function scheduleWarning(plan) {
+    const failure = plan.historySaveFailure;
+    const message = failure.reason === 'full' ? '存储已满，本轮结果未保存。'
+      : failure.reason === 'too_large' ? '本轮结果太大，未保存。' : '本轮结果未确认保存。';
+    return new Date(failure.slotMs).toLocaleString('zh-CN') + ' · ' + message;
+  }
+
+  function scheduleRow(plan) {
+    const config = plan.settings;
+    const label = plan.name || config.model;
+    const row = element('li', 'schedule-plan');
+    const info = element('div', 'schedule-plan-info');
+    info.append(element('strong', 'record-primary', label),
+      element('p', 'schedule-status', [
+        plan.name ? config.model : '', '推理强度 ' + (config.effort === 'auto' ? '自动' : config.effort),
+        '详略 ' + (!config.verbosity || config.verbosity === 'auto' ? '默认' : config.verbosity),
+        config.cron + ' (' + config.timezone + ')', 'Key ' + identityLabel(plan.keyName, config.clientKeyId),
+      ].filter(Boolean).join(' · ')));
+    let state = config.enabled ? '已启用' : '已暂停';
+    if (plan.runningSinceMs != null) state += ' · 执行中';
+    if (config.enabled && Number.isSafeInteger(plan.nextRunAtMs)) {
+      try {
+        const formatter = new Intl.DateTimeFormat('zh-CN', {
+          dateStyle: 'medium', timeStyle: 'short', timeZone: config.timezone,
+        });
+        state += ' · 下一次 ' + formatter.format(plan.nextRunAtMs);
+      } catch {}
     }
+    info.append(element('p', 'schedule-status', state));
+    if (plan.historySaveFailure) info.append(element('p', 'schedule-plan-warning', scheduleWarning(plan)));
+    const actions = element('div', 'schedule-plan-actions');
+    const enabled = !config.enabled;
+    for (const [text, action] of [
+      [enabled ? '启用' : '暂停', () => changeSchedule('/schedule/pause', { id: plan.id, enabled })],
+      ['编辑', () => editSchedule(plan)],
+      ['删除', () => changeSchedule('/schedule/delete', { id: plan.id })],
+    ]) {
+      const button = element('button', 'connection-button', text);
+      button.type = 'button';
+      button.disabled = scheduleBusy;
+      button.setAttribute('aria-label', text + ' ' + label);
+      button.addEventListener('click', action);
+      actions.append(button);
+    }
+    row.append(info, actions);
+    return row;
   }
 
   function scheduleKeyOptions(preferred) {
@@ -823,29 +892,53 @@
     }
   }
 
-  async function refreshSchedule(hydrate = false) {
+  async function editSchedule(plan) {
+    if (scheduleBusy) return;
+    const config = plan?.settings;
+    scheduleEditingId = plan?.id || '';
+    scheduleMessage = '';
+    scheduleError = false;
+    scheduleKeyOptions(config?.clientKeyId || $('key').value);
+    $('schedule-name').value = plan?.name || '';
+    $('schedule-effort').value = config?.effort || 'low';
+    $('schedule-verbosity').value = config?.verbosity || 'auto';
+    $('schedule-cron').value = config?.cron || '';
+    $('schedule-timezone').value = config?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    $('schedule-enabled').checked = Boolean(config?.enabled);
+    if (config && !$('schedule-key').value) {
+      scheduleMessage = '已保存的 Key 当前不可用，请重新选择或暂停计划。';
+      scheduleError = true;
+    }
+    const loading = scheduleModels(config?.model || $('model').value);
+    $('schedule-name').focus();
+    await loading;
+  }
+
+  function closeScheduleEditor() {
+    scheduleEditingId = null;
+    ++scheduleModelsVersion;
+    scheduleModelLoading = false;
+  }
+
+  function scheduleResponse(response) {
+    if (!Array.isArray(response.plans) || !Number.isSafeInteger(response.maxPlans)
+      || response.plans.some(plan => !plan?.settings || typeof plan.id !== 'string')) {
+      throw new Error('无法读取定时计划，请重新打开当前版本页面。');
+    }
+    scheduleSnapshot = response;
+  }
+
+  async function refreshSchedule() {
     if (!bridge || closed || scheduleBusy) return;
     const version = ++scheduleRefreshVersion;
     try {
       const response = await request('GET', '/schedule');
       if (closed || version !== scheduleRefreshVersion) return;
-      const populate = (hydrate || scheduleSnapshot === null) && !scheduleDirty;
-      scheduleSnapshot = response;
-      if (populate) {
-        const config = response.settings;
+      const firstRead = scheduleSnapshot === null;
+      scheduleResponse(response);
+      if (firstRead) {
         scheduleMessage = '';
         scheduleError = false;
-        scheduleKeyOptions(config?.clientKeyId || $('key').value);
-        $('schedule-effort').value = config?.effort || 'low';
-        $('schedule-verbosity').value = config?.verbosity || 'auto';
-        $('schedule-cron').value = config?.cron || '';
-        $('schedule-timezone').value = config?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-        $('schedule-enabled').checked = Boolean(config?.enabled);
-        if (config && !$('schedule-key').value) {
-          scheduleMessage = '已保存的 Key 当前不可用，请重新选择或暂停计划。';
-          scheduleError = true;
-        }
-        await scheduleModels(config?.model || $('model').value);
       }
     } catch (error) {
       if (closed || version !== scheduleRefreshVersion) return;
@@ -865,15 +958,15 @@
     try {
       const response = await request('POST', path, body);
       if (closed) return;
-      scheduleSnapshot = response;
-      $('schedule-enabled').checked = Boolean(response.settings?.enabled);
+      scheduleResponse(response);
       if (path === '/schedule') {
-        scheduleDirty = false;
-        $('schedule-cron').value = response.settings.cron;
-        $('schedule-timezone').value = response.settings.timezone;
+        closeScheduleEditor();
         scheduleMessage = '计划已保存。';
+      } else if (path === '/schedule/delete') {
+        if (body.id === scheduleEditingId) closeScheduleEditor();
+        scheduleMessage = '计划已删除。';
       } else {
-        scheduleMessage = response.runningSinceMs ? '已暂停后续测试，本轮会继续完成。' : '计划已暂停。';
+        scheduleMessage = body.enabled ? '计划已启用。' : '已暂停后续测试，已提交的任务会继续完成。';
       }
     } catch (error) {
       if (!closed) { scheduleMessage = error.message; scheduleError = true; }
@@ -885,6 +978,7 @@
 
   async function initialize() {
     if (controller) return;
+    void ensureSparePreviewTicket();
     if (!bridge && direct) { await loadDirectModels(); return; }
     if (!bridge || bridge.version !== 2 || typeof bridge.request !== 'function') {
       connection('独立页面预览');
@@ -911,15 +1005,22 @@
         $('model').replaceChildren(new Option('请先启用一个 Client Key', ''));
         connection('暂无调用身份');
         notice('请先在 CPR 中启用一个有模型访问权限的 Client Key，然后刷新此页。');
-        if (!scheduleDirty) scheduleKeyOptions('');
-        void refreshSchedule(true);
+        if (scheduleEditingId !== null) {
+          scheduleKeyOptions('');
+          void scheduleModels('');
+        }
+        void refreshSchedule();
         return;
       }
       $('key').value = keys.some(key => key.id === previous) ? previous : keys[0].id;
       await loadModels(currentEpoch);
       if (!closed && epoch === currentEpoch) {
-        if (scheduleDirty) scheduleKeyOptions($('schedule-key').value);
-        void refreshSchedule(true);
+        if (scheduleEditingId !== null) {
+          const key = $('schedule-key').value;
+          scheduleKeyOptions(key);
+          if (key && !$('schedule-key').value) void scheduleModels('');
+        }
+        void refreshSchedule();
       }
     } catch (error) {
       if (closed || epoch !== currentEpoch) return;
@@ -961,12 +1062,24 @@
     return node;
   }
 
+  function scheduledSlot(id) {
+    const text = scheduledId.exec(id)?.[1];
+    if (text === undefined) return null;
+    const slot = BigInt(text);
+    return slot <= 18446744073709551615n && slot % 60000n === 0n ? text : null;
+  }
+
+  function anyJobId(id) {
+    return typeof id === 'string' && (manualId.test(id) || refineId.test(id) || scheduledSlot(id) !== null);
+  }
+
   function validRecord(record) {
     return record && typeof record.id === 'string'
       && (record.trigger === 'scheduled'
-        ? Number.isSafeInteger(record.scheduledAtMs) && record.id === 'scheduled-' + record.scheduledAtMs
+        ? Number.isSafeInteger(record.scheduledAtMs) && String(record.scheduledAtMs) === scheduledSlot(record.id)
+          && record.scheduledAtMs <= record.startedAtMs
         : record.trigger === 'refined' ? refineId.test(record.id)
-          : (record.trigger === 'manual' || record.trigger === undefined) && /^[a-f\d]{32}$/i.test(record.id))
+          : (record.trigger === 'manual' || record.trigger === undefined) && manualId.test(record.id))
       && Number.isSafeInteger(record.startedAtMs) && record.startedAtMs >= 0 && record.startedAtMs <= 8640000000000000
       && typeof record.model === 'string' && typeof record.effort === 'string' && Object.hasOwn(outcomes, record.outcome)
       && (record.verbosity === undefined || ['auto', 'low', 'medium', 'high'].includes(record.verbosity))
@@ -996,7 +1109,8 @@
 
   function renderHistory() {
     if (closed) return;
-    $('history-hint').textContent = historyMessage || '点击缩略图看大图 · 每页 20 条';
+    $('history-hint').textContent = historyMessage || (bridge
+      ? '点击缩略图在新标签页播放 · 每页 20 条' : '点击缩略图看大图 · 每页 20 条');
     $('history-count').textContent = number.format(historyTotal) + ' 条';
     $('history-empty').hidden = savedRecords.length > 0;
     $('history-table').hidden = savedRecords.length === 0;
@@ -1053,9 +1167,9 @@
     const actions = element('div', 'record-actions');
     const html = source ? extractDocument(source) : '';
     if (html || (!source && record.hasSource)) {
-      const button = element('button', 'thumb', html ? '看大图' : '打开');
+      const button = element('button', 'thumb', bridge ? '播放' : html ? '看大图' : '打开');
       button.type = 'button';
-      button.setAttribute('aria-label', '打开 ' + record.model + ' 在 ' + date.toLocaleString('zh-CN') + ' 生成的结果');
+      button.setAttribute('aria-label', (bridge ? '播放 ' : '打开 ') + record.model + ' 在 ' + date.toLocaleString('zh-CN') + ' 生成的结果');
       const url = html ? svgPreview(html, true) : '';
       if (url) {
         const image = element('img');
@@ -1066,10 +1180,13 @@
         image.src = url;
         button.append(image);
       }
-      const marker = element('span', 'thumb-marker', '↗');
-      marker.setAttribute('aria-hidden', 'true');
-      button.append(marker);
-      button.addEventListener('click', () => openRecord(record, true));
+      if (bridge) {
+        const marker = element('span', 'thumb-marker', '↗');
+        marker.setAttribute('aria-hidden', 'true');
+        button.append(marker);
+      }
+      button.addEventListener('click', () => bridge && typeof bridge.callbackTicket === 'function'
+        ? playHistoryRecord(record) : openRecord(record, true));
       actions.append(button);
     }
     const sourceButton = element('button', 'record-link', source || record.hasSource ? '源码' : '轮次');
@@ -1514,17 +1631,73 @@
     return Boolean(ticket?.callbackUrl) && (!ticket.expiresAtMs || ticket.expiresAtMs - Date.now() > 5000);
   }
 
-  function prefetchPreviewTicket(target) {
-    if (!bridge || !target?.html || typeof bridge.callbackTicket !== 'function') return;
-    const pending = bridge.callbackTicket({ path: 'preview', ttlSeconds: 300 }).then(ticket => {
-      if (openedRecord === target && target.ticketPromise === pending && isFreshTicket(ticket)) {
-        target.ticket = ticket;
-      }
-      return ticket;
-    }).catch(() => null).finally(() => {
-      if (target.ticketPromise === pending) target.ticketPromise = null;
-    });
-    target.ticketPromise = pending;
+  function ensureSparePreviewTicket() {
+    if (closed || typeof bridge?.callbackTicket !== 'function' || isFreshTicket(sparePreviewTicket)) return;
+    if (sparePreviewRequest) return sparePreviewRequest;
+    clearTimeout(sparePreviewTimer);
+    sparePreviewTicket = null;
+    sparePreviewRequest = Promise.resolve().then(() => bridge.callbackTicket({ path: 'preview', ttlSeconds: 300 }))
+      .then(ticket => {
+        if (closed || !isFreshTicket(ticket)) return;
+        sparePreviewTicket = ticket;
+        if (ticket.expiresAtMs) {
+          sparePreviewTimer = setTimeout(() => {
+            sparePreviewTicket = null;
+            void ensureSparePreviewTicket();
+          }, ticket.expiresAtMs - Date.now() - 5000);
+        }
+      }).catch(() => {}).finally(() => { sparePreviewRequest = null; });
+    return sparePreviewRequest;
+  }
+
+  function takeSparePreviewTicket() {
+    if (!isFreshTicket(sparePreviewTicket)) return null;
+    const ticket = sparePreviewTicket;
+    sparePreviewTicket = null;
+    void ensureSparePreviewTicket();
+    return ticket;
+  }
+
+  async function waitForPreviewTicket(isCurrent) {
+    await ensureSparePreviewTicket();
+    return isCurrent() ? takeSparePreviewTicket() : null;
+  }
+
+  function previewLink(ticket, query) {
+    return ticket.callbackUrl + (ticket.callbackUrl.includes('?') ? '&' : '?') + query;
+  }
+
+  function canOpenPreviewLink(url) {
+    try { return typeof bridge.openExternal === 'function' && new URL(url).protocol === 'https:'; }
+    catch { return false; }
+  }
+
+  async function playHistoryRecord(record) {
+    const intent = ++openIntent;
+    const isCurrent = () => !closed && intent === openIntent;
+    // The ready path must invoke openExternal before yielding the click turn.
+    const ticket = takeSparePreviewTicket() || await waitForPreviewTicket(isCurrent);
+    if (!isCurrent()) return;
+    if (!ticket) return openRecord(record, true);
+
+    const url = previewLink(ticket, 'id=' + encodeURIComponent(record.id));
+    if (canOpenPreviewLink(url)) {
+      try {
+        await bridge.openExternal(url);
+        if (isCurrent()) {
+          historyMessage = '请在宿主弹出的确认框中点击“打开链接”，在新标签页播放完整动画。';
+          renderHistory();
+        }
+        return;
+      } catch {}
+    }
+    if (!isCurrent()) return;
+    const copied = await copyText(url, isCurrent);
+    if (isCurrent()) {
+      historyMessage = copied ? '已复制一次性播放链接，请粘贴到新标签页打开'
+        : '请复制此链接到新标签页打开：' + url;
+      renderHistory();
+    }
   }
 
   async function openRecord(record, preferAnimation, draftInfo = null) {
@@ -1549,9 +1722,8 @@
     openedRecord = {
       id: record.id, source, html, startedAtMs: record.startedAtMs,
       draftLabel: info.label || '', jobId: info.jobId || '', draftVersion: info.version || '',
-      ticket: null, ticketPromise: null,
     };
-    if (bridge && html) prefetchPreviewTicket(openedRecord);
+    if (bridge && html) void ensureSparePreviewTicket();
     $('dialog-meta').textContent = [record.model, record.effort,
       record.verbosity && record.verbosity !== 'auto' ? '详略 ' + record.verbosity : '',
       new Date(record.startedAtMs).toLocaleString('zh-CN'),
@@ -1698,7 +1870,7 @@
       const area = document.createElement('textarea');
       area.value = text;
       area.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
-      $('preview-dialog').append(area);
+      ($('preview-dialog').open ? $('preview-dialog') : document.body).append(area);
       area.select();
       let copied = false;
       try { copied = document.execCommand('copy'); } catch {}
@@ -1721,48 +1893,33 @@
   async function openExternalPreview() {
     if (!bridge || !openedRecord?.html || typeof bridge.callbackTicket !== 'function') return;
     const record = openedRecord;
-    let ticket = isFreshTicket(record.ticket) ? record.ticket : null;
-    const pending = ticket ? null : record.ticketPromise;
-    record.ticket = null;
-    record.ticketPromise = null;
-    if (!ticket && pending) {
-      try { ticket = await pending; } catch { ticket = null; }
-    }
-    if (openedRecord !== record) return;
-    if (!isFreshTicket(ticket)) {
-      try { ticket = await bridge.callbackTicket({ path: 'preview', ttlSeconds: 300 }); } catch { ticket = null; }
-    }
-    if (openedRecord !== record || !isFreshTicket(ticket)) {
-      if (openedRecord === record) {
-        $('dialog-copy-status').textContent = '暂时无法获取播放链接，请点击“复制 HTML”单独打开';
-        prefetchPreviewTicket(record);
-      }
+    const isCurrent = () => !closed && openedRecord === record;
+    const ticket = takeSparePreviewTicket() || await waitForPreviewTicket(isCurrent);
+    if (!isCurrent()) return;
+    if (!ticket) {
+      $('dialog-copy-status').textContent = '暂时无法获取播放链接，请点击“复制 HTML”单独打开';
       return;
     }
     const suffix = record.jobId && record.draftVersion
       ? 'job=' + encodeURIComponent(record.jobId) + '&version=' + encodeURIComponent(record.draftVersion)
       : 'id=' + encodeURIComponent(record.id);
-    const previewUrl = ticket.callbackUrl + (ticket.callbackUrl.includes('?') ? '&' : '?') + suffix;
-    let isHttps = false;
-    try { isHttps = new URL(previewUrl).protocol === 'https:'; } catch {}
-    if (isHttps && typeof bridge.openExternal === 'function') {
+    const previewUrl = previewLink(ticket, suffix);
+    if (canOpenPreviewLink(previewUrl)) {
       try {
         await bridge.openExternal(previewUrl);
-        if (openedRecord === record) {
+        if (isCurrent()) {
           $('dialog-copy-status').textContent = '请在上方确认框点击“打开链接”，在新标签页播放完整动画';
-          prefetchPreviewTicket(record);
         }
         return;
       } catch {}
     }
-    if (openedRecord !== record) return;
-    const copied = await copyText(previewUrl, () => openedRecord === record);
-    if (openedRecord === record) {
+    if (!isCurrent()) return;
+    const copied = await copyText(previewUrl, isCurrent);
+    if (isCurrent()) {
       $('open-external').focus();
       $('dialog-copy-status').textContent = copied
         ? '已复制一次性播放链接，请粘贴到新标签页打开'
         : '请复制此链接到新标签页打开：' + previewUrl;
-      prefetchPreviewTicket(record);
     }
   }
 
@@ -1871,19 +2028,32 @@
     $('refine-first').addEventListener('click', () => openRefinementDraft('first'));
     $('refine-latest').addEventListener('click', () => openRefinementDraft('latest'));
     $('schedule-panel').hidden = false;
+    $('schedule-add').addEventListener('click', () => editSchedule());
+    $('schedule-cancel').addEventListener('click', () => {
+      closeScheduleEditor();
+      scheduleMessage = '';
+      scheduleError = false;
+      scheduleControls();
+    });
     $('schedule-key').addEventListener('change', () => {
-      scheduleDirty = true;
       scheduleError = false;
       scheduleMessage = '';
       return scheduleModels('');
     });
-    for (const id of ['schedule-model', 'schedule-effort', 'schedule-verbosity', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) {
-      $(id).addEventListener('input', () => { scheduleDirty = true; scheduleControls(); });
-    }
+    $('schedule-model').addEventListener('change', scheduleControls);
     $('schedule-form').addEventListener('submit', event => {
       event.preventDefault();
-      if ($('schedule-save').disabled) return;
+      if (scheduleEditingId === null || $('schedule-save').disabled) return;
+      const name = $('schedule-name').value;
+      if ([...name].length > 64 || /\p{Cc}/u.test(name)) {
+        scheduleMessage = '计划名称最多 64 个字符，且不能包含控制字符。';
+        scheduleError = true;
+        scheduleControls();
+        $('schedule-name').focus();
+        return;
+      }
       return changeSchedule('/schedule', {
+        ...(scheduleEditingId ? { id: scheduleEditingId } : {}), name,
         clientKeyId: $('schedule-key').value, model: $('schedule-model').value,
         effort: $('schedule-effort').value, verbosity: $('schedule-verbosity').value,
         cron: $('schedule-cron').value.trim(),
@@ -1917,6 +2087,7 @@
   window.addEventListener('codex-proxy-themechange', theme);
   const poll = bridge ? setInterval(() => {
     if (closed || document.hidden) return;
+    void ensureSparePreviewTicket();
     if (!historyOffset && !historyPaging) {
       historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
     }
@@ -1934,6 +2105,7 @@
     clearInterval(elapsedTimer);
     clearInterval(poll);
     clearInterval(refinePoll);
+    clearTimeout(sparePreviewTimer);
     cancelAnimationFrame(renderFrame);
   }, { once: true });
   theme();

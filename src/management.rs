@@ -45,6 +45,7 @@ pub(super) fn registration() -> ManagementRegistration {
             route("GET", "schedule"),
             route("POST", "schedule"),
             route("POST", "schedule/pause"),
+            route("POST", "schedule/delete"),
             route("GET", "refine"),
             route("POST", "refine"),
             route("POST", "refine/stop"),
@@ -224,6 +225,7 @@ pub(super) async fn handle(
         ("GET", "schedule") => schedule::status(&call.host).await,
         ("POST", "schedule") => schedule::save(&call.host, &call.payload).await,
         ("POST", "schedule/pause") => schedule::pause(&call.host, &call.payload).await,
+        ("POST", "schedule/delete") => schedule::delete(&call.host, &call.payload).await,
         ("GET", "refine") => refine::status(&call.host).await,
         ("POST", "refine") => refine::start(&call.host, &call.payload).await,
         ("POST", "refine/stop") => refine::stop(&call.host, &call.payload).await,
@@ -243,6 +245,9 @@ pub(super) async fn handle(
                 ErrorCode::InvalidInput if error.message == history::MISSING => {
                     (404, "未找到这条生成记录。")
                 }
+                ErrorCode::InvalidInput if error.message == schedule::MISSING => {
+                    (404, "未找到该定时计划。")
+                }
                 ErrorCode::InvalidInput => (
                     400,
                     match error.message.as_str() {
@@ -259,10 +264,16 @@ pub(super) async fn handle(
                     },
                 ),
                 ErrorCode::PermissionDenied => (403, "没有访问权限，或所选 Client Key 不可用"),
+                ErrorCode::Conflict if error.message == schedule::FULL => {
+                    (409, "定时计划已达上限，请删除一个计划后再新增。")
+                }
+                ErrorCode::Conflict if error.message == schedule::CLAIMED => {
+                    (409, "本轮计划正在提交，请稍后再删除。")
+                }
                 ErrorCode::Conflict if call.request.path.starts_with("schedule") => {
                     (409, "定时计划刚刚发生变化，请刷新后重试。")
                 }
-                ErrorCode::Conflict if error.message == "pelican refine queue full" => {
+                ErrorCode::Conflict if error.message == refine::QUEUE_FULL => {
                     (409, "当前排队任务较多，请等待已有任务完成后再试。")
                 }
                 ErrorCode::Conflict if call.request.path.starts_with("refine") => {
