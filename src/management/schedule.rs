@@ -10,15 +10,17 @@ use gateway_plugin_sdk::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{generation, history, identity, invalid, list_models, refine, state, valid_effort};
+use super::{
+    default_verbosity, history, identity, invalid, is_auto_verbosity, list_models, refine, state,
+    valid_effort, valid_verbosity,
+};
 
 const NAMESPACE: &str = "pelican-schedule";
 const KEY: &str = "plan";
 const MINUTE_MS: u64 = 60_000;
-const LEASE_MS: u64 = 135_000;
-const MAX_MODEL_MS: u64 = 90_000;
-// CPR 3.44 waits this long between successful maintenance calls.
-const HOST_INTERVAL_MS: u64 = 30_000;
+const LEASE_MS: u64 = 420_000;
+const MAX_MODEL_MS: u64 = 300_000;
+const CAS_RETRIES: usize = 12;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,6 +29,8 @@ struct Settings {
     client_key_id: String,
     model: String,
     effort: String,
+    #[serde(default = "default_verbosity", skip_serializing_if = "is_auto_verbosity")]
+    verbosity: String,
     cron: String,
     timezone: String,
 }
@@ -40,7 +44,40 @@ struct Plan {
     last_claimed_slot_ms: Option<u64>,
     pending: Option<Claim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_enqueue: Option<PendingEnqueue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     history_save_failure: Option<SaveFailure>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PendingEnqueue {
+    slot_ms: u64,
+    started_at_ms: u64,
+    client_key_id: String,
+    key_name: Option<String>,
+    model: String,
+    effort: String,
+    #[serde(default = "default_verbosity", skip_serializing_if = "is_auto_verbosity")]
+    verbosity: String,
+}
+
+impl PendingEnqueue {
+    fn into_task(self) -> refine::ScheduleTask {
+        refine::ScheduleTask {
+            slot_ms: self.slot_ms,
+            started_at_ms: self.started_at_ms,
+            client_key_id: self.client_key_id,
+            key_name: self.key_name,
+            model: self.model,
+            effort: self.effort,
+            verbosity: if self.verbosity.is_empty() {
+                default_verbosity()
+            } else {
+                self.verbosity
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -52,7 +89,7 @@ struct SaveFailure {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SaveFailureReason {
+pub(super) enum SaveFailureReason {
     Full,
     TooLarge,
     Unconfirmed,
@@ -112,20 +149,51 @@ impl Plan {
             }))
     }
 
-    fn view(&self, now_ms: u64) -> Result<Value, PluginFault> {
+    fn due_slot_in_window(&self, start_ms: u64, end_ms: u64) -> Result<Option<u64>, PluginFault> {
+        if !self.settings.enabled {
+            return Ok(None);
+        }
+        let end_minute = minute(end_ms);
+        let mut anchor = minute(start_ms)
+            .saturating_sub(1000)
+            .max(self.armed_after_slot_ms)
+            .max(self.last_claimed_slot_ms.unwrap_or(0));
+        let rule = Rule::parse(&self.settings)?;
+        let mut chosen = None;
+        for _ in 0..16 {
+            let Some(slot) = rule.next_after(anchor) else {
+                break;
+            };
+            if slot > end_minute {
+                break;
+            }
+            if slot > anchor && slot >= minute(start_ms) && slot.is_multiple_of(MINUTE_MS) {
+                chosen = Some(slot);
+            }
+            anchor = slot;
+        }
+        Ok(chosen)
+    }
+
+    fn view(&self, now_ms: u64, active_since_ms: Option<u64>) -> Result<Value, PluginFault> {
         Ok(json!({
             "settings": self.settings,
             "nextRunAtMs": self.next_slot(now_ms)?,
-            "runningSinceMs": self.pending.as_ref().map(|claim| claim.started_at_ms),
+            "runningSinceMs": self.pending.as_ref().map(|claim| claim.started_at_ms).or(active_since_ms),
             "historySaveFailure": self.history_save_failure,
         }))
     }
 }
 
 pub(super) async fn status(host: &HostClient) -> Result<Value, PluginFault> {
+    let active_since = refine::active_scheduled_since_ms(host).await?;
     match read(host).await?.0 {
-        Some(plan) => plan.view(now_ms()),
-        None => Ok(json!({"settings": null, "nextRunAtMs": null, "runningSinceMs": null})),
+        Some(plan) => plan.view(now_ms(), active_since),
+        None => Ok(json!({
+            "settings": null,
+            "nextRunAtMs": null,
+            "runningSinceMs": active_since
+        })),
     }
 }
 
@@ -137,6 +205,7 @@ pub(super) async fn save(host: &HostClient, payload: &[u8]) -> Result<Value, Plu
     if !identity::valid_text(&settings.client_key_id, 200)
         || !identity::valid_text(&settings.model, 512)
         || !valid_effort(&settings.effort)
+        || !valid_verbosity(&settings.verbosity)
     {
         return Err(invalid());
     }
@@ -167,11 +236,12 @@ pub(super) async fn save(host: &HostClient, payload: &[u8]) -> Result<Value, Plu
         return Err(invalid_cron());
     }
     let (previous, version) = read(host).await?;
-    let (last_claimed_slot_ms, pending, history_save_failure) = previous
+    let (last_claimed_slot_ms, pending, pending_enqueue, history_save_failure) = previous
         .map(|plan| {
             (
                 plan.last_claimed_slot_ms,
                 plan.pending,
+                plan.pending_enqueue,
                 plan.history_save_failure,
             )
         })
@@ -182,10 +252,12 @@ pub(super) async fn save(host: &HostClient, payload: &[u8]) -> Result<Value, Plu
         armed_after_slot_ms: minute(now),
         last_claimed_slot_ms,
         pending,
+        pending_enqueue,
         history_save_failure,
     };
     write(host, version, &plan).await?;
-    plan.view(now)
+    let active_since = refine::active_scheduled_since_ms(host).await?;
+    plan.view(now, active_since)
 }
 
 pub(super) async fn pause(host: &HostClient, payload: &[u8]) -> Result<Value, PluginFault> {
@@ -195,24 +267,29 @@ pub(super) async fn pause(host: &HostClient, payload: &[u8]) -> Result<Value, Pl
     {
         return Err(invalid());
     }
+    let active_since = refine::active_scheduled_since_ms(host).await?;
     let (Some(mut plan), version) = read(host).await? else {
-        return Ok(json!({"settings": null, "nextRunAtMs": null, "runningSinceMs": null}));
+        return Ok(json!({
+            "settings": null,
+            "nextRunAtMs": null,
+            "runningSinceMs": active_since
+        }));
     };
     if plan.settings.enabled {
         plan.settings.enabled = false;
         write(host, version, &plan).await?;
     }
-    plan.view(now_ms())
+    plan.view(now_ms(), active_since)
 }
 
 pub(crate) async fn reconcile(call: TypedCall<Empty>) -> Result<TypedReply<Empty>, PluginFault> {
     let started = Instant::now();
     let host = &call.host;
-    let (plan, version) = read(host).await?;
+    let (plan, _) = read(host).await?;
     let now = now_ms();
     if let Some(claim) = plan.as_ref().and_then(|plan| plan.pending.as_ref()) {
         if now.saturating_sub(claim.started_at_ms) >= LEASE_MS {
-            // If the final result was already saved, append keeps that record by ID.
+            // Legacy v0.7.0 pending slot recovery: record interrupted without replaying.
             let mut record = record_for(claim);
             record.issue = Some(history::Issue::Interrupted);
             finish(host, claim.slot_ms, record).await?;
@@ -226,42 +303,116 @@ pub(crate) async fn reconcile(call: TypedCall<Empty>) -> Result<TypedReply<Empty
             .saturating_sub(started.elapsed().as_millis() as u64 + reserve_ms)
             .min(MAX_MODEL_MS)
     };
-    let next = plan
-        .as_ref()
-        .map(|plan| plan.next_slot(now))
-        .transpose()?
-        .flatten();
-    let Some(slot_ms) = next.filter(|slot| *slot <= now) else {
-        // The host serializes reconciliation per instance. Keep a full
-        // callback and polling interval free before the next scheduled run.
-        let budget = model_budget();
-        let window = budget
-            .saturating_add(reserve_ms)
-            .saturating_add(HOST_INTERVAL_MS);
-        let may_dispatch = next.is_none_or(|slot| slot.saturating_sub(now) > window);
-        refine::reconcile(host, may_dispatch.then_some(budget)).await?;
-        return Ok(done());
+    let t0 = now_ms();
+    flush_pending_enqueue(host).await?;
+    enqueue_due_slot(host, t0, t0).await?;
+    let budget = model_budget();
+    refine::reconcile(host, (budget > 0).then_some(budget)).await?;
+    let t1 = now_ms();
+    if minute(t1) > minute(t0) {
+        enqueue_due_slot(host, t0, t1).await?;
+    }
+    Ok(done())
+}
+
+async fn flush_pending_enqueue(host: &HostClient) -> Result<(), PluginFault> {
+    let Some(plan) = read(host).await?.0 else {
+        return Ok(());
     };
-    let mut plan = plan.ok_or_else(invalid)?;
-    let claim = Claim {
+    let Some(pending) = plan.pending_enqueue else {
+        return Ok(());
+    };
+    let slot_ms = pending.slot_ms;
+    refine::enqueue_scheduled(host, pending.into_task()).await?;
+    clear_pending_enqueue(host, slot_ms).await
+}
+
+async fn clear_pending_enqueue(host: &HostClient, slot_ms: u64) -> Result<(), PluginFault> {
+    for _ in 0..CAS_RETRIES {
+        let (Some(mut plan), version) = read(host).await? else {
+            return Ok(());
+        };
+        if plan
+            .pending_enqueue
+            .as_ref()
+            .is_none_or(|pending| pending.slot_ms != slot_ms)
+        {
+            return Ok(());
+        }
+        plan.pending_enqueue = None;
+        match write(host, version, &plan).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.code == ErrorCode::Conflict => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+async fn enqueue_due_slot(
+    host: &HostClient,
+    window_start_ms: u64,
+    window_end_ms: u64,
+) -> Result<(), PluginFault> {
+    let (plan, version) = read(host).await?;
+    let Some(mut plan) = plan else {
+        return Ok(());
+    };
+    let Some(slot_ms) = plan.due_slot_in_window(window_start_ms, window_end_ms)? else {
+        return Ok(());
+    };
+    if slot_ms > window_end_ms {
+        return Ok(());
+    }
+    let pending = PendingEnqueue {
         slot_ms,
-        started_at_ms: now,
+        started_at_ms: now_ms().max(slot_ms),
         client_key_id: plan.settings.client_key_id.clone(),
         key_name: plan.key_name.clone(),
         model: plan.settings.model.clone(),
         effort: plan.settings.effort.clone(),
+        verbosity: plan.settings.verbosity.clone(),
     };
+    // Record pending_enqueue together with last_claimed_slot_ms so a failure before enqueue completes is recovered next tick.
     plan.last_claimed_slot_ms = Some(slot_ms);
-    plan.pending = Some(claim.clone());
+    plan.pending_enqueue = Some(pending.clone());
     match write(host, version, &plan).await {
         Ok(()) => {}
-        Err(error) if error.code == ErrorCode::Conflict => return Ok(done()),
+        Err(error) if error.code == ErrorCode::Conflict => return Ok(()),
         Err(error) => return Err(error),
     }
-    // Commit the slot before sending the request. A crash or lost reply is not a retry signal.
-    let record = generation::draft(host, record_for(&claim), model_budget()).await;
-    finish(host, slot_ms, record).await?;
-    Ok(done())
+    refine::enqueue_scheduled(host, pending.into_task()).await?;
+    clear_pending_enqueue(host, slot_ms).await
+}
+
+pub(super) async fn record_save_outcome(
+    host: &HostClient,
+    slot_ms: u64,
+    reason: Option<SaveFailureReason>,
+) -> Result<(), PluginFault> {
+    let failure = reason.map(|reason| SaveFailure { slot_ms, reason });
+    for _ in 0..CAS_RETRIES {
+        let (Some(mut plan), version) = read(host).await? else {
+            return Ok(());
+        };
+        if plan.history_save_failure.as_ref().map(|item| item.slot_ms)
+            == failure.as_ref().map(|item| item.slot_ms)
+            && plan.history_save_failure.as_ref().map(|item| item.reason as u8)
+                == failure.as_ref().map(|item| item.reason as u8)
+        {
+            return Ok(());
+        }
+        plan.history_save_failure = failure;
+        match write(host, version, &plan).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.code == ErrorCode::Conflict => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(PluginFault::new(
+        ErrorCode::Conflict,
+        "pelican schedule changed",
+    ))
 }
 
 fn record_for(claim: &Claim) -> history::Record {
@@ -270,6 +421,7 @@ fn record_for(claim: &Claim) -> history::Record {
         started_at_ms: claim.started_at_ms,
         model: claim.model.clone(),
         effort: claim.effort.clone(),
+        verbosity: default_verbosity(),
         trigger: history::Trigger::Scheduled,
         client_key_id: Some(claim.client_key_id.clone()),
         client_key_name: claim.key_name.clone(),
@@ -303,7 +455,7 @@ async fn release(
     slot_ms: u64,
     failure: Option<SaveFailure>,
 ) -> Result<(), PluginFault> {
-    for _ in 0..4 {
+    for _ in 0..CAS_RETRIES {
         let (Some(mut plan), version) = read(host).await? else {
             return Ok(());
         };
@@ -371,6 +523,7 @@ mod tests {
                 client_key_id: "fixture-key".into(),
                 model: "fixture-model".into(),
                 effort: "high".into(),
+                verbosity: "auto".into(),
                 cron: "0 9 * * 1-5".into(),
                 timezone: "Asia/Shanghai".into(),
             },
@@ -378,8 +531,24 @@ mod tests {
             armed_after_slot_ms: ms("2026-11-18T00:59:00Z"),
             last_claimed_slot_ms: None,
             pending: None,
+            pending_enqueue: None,
             history_save_failure: None,
         }
+    }
+
+    #[test]
+    fn due_slot_in_window_catches_cron_crossed_during_long_manual_run() {
+        let mut daily = plan();
+        daily.settings.cron = "0 9 * * *".into();
+        let nine_am = ms("2026-11-18T01:00:00Z");
+        daily.armed_after_slot_ms = nine_am - 120_000;
+        let t0 = nine_am - 15_000;
+        let t1 = nine_am + 165_000;
+        assert_eq!(daily.next_slot(t1).unwrap(), Some(ms("2026-11-19T01:00:00Z")));
+        assert_eq!(daily.due_slot_in_window(t0, t1).unwrap(), Some(nine_am));
+
+        daily.armed_after_slot_ms = nine_am + 60_000;
+        assert_eq!(daily.due_slot_in_window(t0, t1).unwrap(), None);
     }
 
     #[test]

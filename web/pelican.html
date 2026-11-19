@@ -53,7 +53,7 @@
     summary { cursor: pointer; width: fit-content; color: var(--ink); padding-right: 6px; }
     .prompt { margin: 9px 0 0; font-family: inherit; font-size: 12px; line-height: 1.9; max-width: 740px; padding: 12px 16px; color: var(--ink); border: 1px solid #c9def9; border-radius: 9px; background: #ffffff45; white-space: pre-wrap; overflow-wrap: anywhere; }
     .panel { border: 1px solid #ffffff55; background: var(--card); border-radius: 16px; box-shadow: var(--shadow); }
-    .controls { display: grid; grid-template-columns: minmax(180px, 1.05fr) minmax(200px, 1.3fr) minmax(128px, .65fr) auto; align-items: end; gap: 17px; padding: 23px 24px 20px; }
+    .controls { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(190px, 1.25fr) minmax(118px, .6fr) minmax(118px, .6fr) auto; align-items: end; gap: 17px; padding: 23px 24px 20px; }
     .field { min-width: 0; }
     .field label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin-bottom: 7px; }
     .field label .icon { width: 13px; height: 13px; }
@@ -75,8 +75,11 @@
     .refine-top { justify-content: space-between; }
     .refine-description, .refine-status, .refine-error { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
     .refine-status { margin-top: 8px; }
+    .refine-queue { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--muted); font-size: 12px; }
+    .refine-queue-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 7px; background: var(--stage); border: 1px solid var(--line); }
     .refine-actions { margin-top: 6px; }
     .refine-error { color: var(--ink); }
+    .dialog-note { padding: 8px 18px; border-bottom: 1px solid var(--line); background: var(--stage); color: var(--muted); font-size: 11px; }
     .schedule { margin-top: 18px; }
     .schedule-summary { display: flex; align-items: center; gap: 10px; min-height: 55px; padding: 12px 22px; list-style: none; cursor: pointer; }
     .schedule-summary::-webkit-details-marker { display: none; }
@@ -84,7 +87,7 @@
     details[open] > .schedule-summary::after { transform: rotate(90deg); }
     .schedule-title { font-size: 14px; font-weight: 700; }
     .schedule-chip { color: var(--blue-ink); background: var(--soft); padding: 3px 8px; border-radius: 7px; font-size: 11px; }
-    .schedule-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .7fr); gap: 14px; border-top: 1px solid var(--line); padding: 17px 22px; }
+    .schedule-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; border-top: 1px solid var(--line); padding: 17px 22px; }
     .schedule-form input[type="text"] { width: 100%; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); font: inherit; }
     .schedule-help, .schedule-controls { grid-column: 1 / -1; }
     .schedule-help, .schedule-status { margin: 0; color: var(--muted); font-size: 12px; }
@@ -183,6 +186,7 @@
     @media (max-width: 900px) {
       body { padding: 16px; }
       .controls { grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr); gap: 14px; padding: 20px; }
+      .run-field { grid-column: 1 / -1; }
       .primary-button { width: 100%; }
       .metric { padding: 0 12px; }
       .metric-value { font-size: 17px; }
@@ -280,25 +284,26 @@
     <div class="field"><label for="key"><svg class="icon"><use href="#i-key"/></svg>调用身份 · Client Key</label><select id="key" disabled><option value="">连接后读取可用 Key</option></select></div>
     <div class="field"><label for="model">模型</label><select id="model" disabled><option value="">连接后读取可用模型</option></select></div>
     <div class="field"><label for="effort">推理强度</label><select id="effort"><option value="auto">自动</option><option value="none">none</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
+    <div class="field"><label for="verbosity">输出详略度</label><select id="verbosity"><option value="auto" selected>默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div>
     <div class="run-field"><button id="run" class="primary-button" type="button" disabled><svg class="icon"><use href="#i-play"/></svg><span id="run-label">开始测试</span></button></div>
-    <div class="control-footer"><span class="inline"><svg class="icon"><use href="#i-spark"/></svg>单次测试发送 1 个生成请求</span><span id="connection"><span class="connection-dot"></span>等待连接 CPR</span></div>
+    <div class="control-footer"><span class="inline"><svg class="icon"><use href="#i-spark"/></svg><span id="run-hint">单次测试发送 1 个生成请求</span></span><span id="connection"><span class="connection-dot"></span>等待连接 CPR</span></div>
   </section>
   <div class="notice" id="notice" role="status" hidden></div>
 
   <section class="panel refine" id="refine-panel" aria-labelledby="refine-title" hidden>
     <div class="refine-top">
       <div>
-        <div class="card-title"><h2 id="refine-title">多轮打磨</h2></div>
-        <p class="refine-description">使用上方选定的 Key、模型和推理强度。先出初稿，再评审和按需修改，最多调用模型 <span id="refine-max-rounds">3</span> 次。关掉页面后 CPR 会继续处理。</p>
+        <div class="card-title"><h2 id="refine-title">后台运行队列</h2></div>
+        <p class="refine-description">手动「开始测试」与定时测试共用此后台队列，按原题单次直出生成（最多调用模型 <span id="refine-max-rounds">1</span> 次）。关掉页面后 CPR 仍会继续执行并保存记录。</p>
       </div>
-      <button id="refine-start" class="connection-button" type="button" disabled>开始多轮打磨</button>
     </div>
     <p id="refine-status" class="refine-status" role="status">正在读取任务…</p>
+    <div id="refine-queue" class="refine-queue" hidden></div>
     <p id="refine-error" class="refine-error" role="status" hidden></p>
     <div id="refine-actions" class="refine-actions" hidden>
-      <button id="refine-stop" class="connection-button" type="button" hidden>停止后续轮次</button>
+      <button id="refine-stop" class="connection-button" type="button" hidden>停止当前任务</button>
       <button id="refine-first" class="record-link" type="button" hidden>看初稿</button>
-      <button id="refine-latest" class="record-link" type="button" hidden>看当前稿</button>
+      <button id="refine-latest" class="record-link" type="button" hidden>查看结果</button>
     </div>
   </section>
 
@@ -308,6 +313,7 @@
       <div class="field"><label for="schedule-key">Client Key</label><select id="schedule-key" required disabled><option value="">读取中…</option></select></div>
       <div class="field"><label for="schedule-model">模型</label><select id="schedule-model" required disabled><option value="">请选择 Client Key</option></select></div>
       <div class="field"><label for="schedule-effort">推理强度</label><select id="schedule-effort"><option value="auto">自动</option><option value="none">none</option><option value="minimal">minimal</option><option value="low" selected>low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div>
+      <div class="field"><label for="schedule-verbosity">输出详略度</label><select id="schedule-verbosity"><option value="auto" selected>默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div>
       <div class="field"><label for="schedule-cron">Cron 规则</label><input id="schedule-cron" type="text" placeholder="0 9 * * 1-5" maxlength="120" aria-describedby="schedule-help" autocomplete="off" required></div>
       <div class="field"><label for="schedule-timezone">时区</label><input id="schedule-timezone" type="text" list="schedule-timezones" placeholder="Asia/Shanghai" maxlength="80" autocomplete="off" required>
         <datalist id="schedule-timezones"><option value="Asia/Shanghai"></option><option value="UTC"></option><option value="America/Los_Angeles"></option></datalist>
@@ -364,7 +370,7 @@
       <button id="history-next" class="record-link" type="button">下一页</button>
     </nav>
   </section>
-  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.7.0</span></span><span>点击缩略图放大</span></footer>
+  <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-code"/></svg>Pelican Test <span class="footer-tag">0.8.0</span></span><span>点击缩略图放大</span></footer>
 </main>
 <dialog id="preview-dialog" aria-labelledby="dialog-title">
   <div class="dialog-header">
@@ -375,12 +381,14 @@
         <button class="view-tab" id="dialog-source-button" type="button" aria-pressed="false">HTML 源码</button>
       </div>
       <div class="result-tools">
+        <button id="open-external" class="connection-button" type="button" hidden>新标签页播放 ↗</button>
         <button id="copy" class="icon-button" type="button" title="复制 HTML" aria-label="复制 HTML"><svg class="icon"><use href="#i-copy"/></svg></button>
         <button id="download" class="icon-button" type="button" title="下载 HTML" aria-label="下载 HTML"><svg class="icon"><use href="#i-download"/></svg></button>
       </div>
     </div>
     <button id="close-dialog" class="icon-button" type="button" aria-label="关闭记录"><svg class="icon"><use href="#i-close"/></svg></button>
   </div>
+  <div id="dialog-preview-note" class="dialog-note" hidden></div>
   <div id="dialog-frame" class="dialog-frame"></div>
   <div id="dialog-source-panel" class="dialog-source" hidden><pre id="dialog-source" class="source" tabindex="0"></pre></div>
   <div class="dialog-footer"><span id="dialog-stats"></span><span id="dialog-copy-status" class="dialog-copy-status" role="status"></span>
@@ -418,17 +426,18 @@
     review_invalid: '评审没有返回有效的修改或确认',
   };
   const refineEnds = {
-    accepted: '评审通过', limit_reached: '已达到轮次上限', draft_failed: '没有生成完整初稿',
-    review_failed: '评审失败，已保留上一份可用稿', interrupted: '任务中断，未重试', stopped: '已停止后续轮次',
+    accepted: '已完成', limit_reached: '已达到轮次上限', draft_failed: '生成未完成',
+    review_failed: '评审失败，已保留上一份可用稿', interrupted: '任务中断，未重试', stopped: '已停止',
   };
   const refineActions = {
-    drafted: '生成初稿', revised: '修改稿件', accepted: '确认稿件', failed: '本轮未完成', interrupted: '调用中断',
+    drafted: '模型生成', revised: '修改稿件', accepted: '确认稿件', failed: '未完成', interrupted: '调用中断',
   };
   const refineArchives = {
     saved: '已存入生成记录', full: '生成记录的存储已满，未保存',
     too_large: '结果超过保存上限，未保存', unconfirmed: '无法确认是否已保存到生成记录',
   };
   const refineId = /^refine-[a-f\d]{32}$/i;
+  const anyJobId = /^(?:[a-f\d]{32}|refine-[a-f\d]{32}|scheduled-\d+)$/i;
   const $ = id => document.getElementById(id);
   const bridge = window.codexProxyPlugin;
   const encoder = new TextEncoder();
@@ -470,6 +479,8 @@
   let refineReadFailed = false;
   let refineBusy = false;
   let refineMessage = '';
+  const renderedQueuePills = new Map();
+  let queueHeaderEl = null;
 
   function notice(message = '') {
     $('notice').textContent = message;
@@ -504,18 +515,29 @@
   function controls() {
     const busy = Boolean(controller);
     const connected = Boolean(bridge || direct);
-    $('key').disabled = busy || !bridge || $('key').options.length === 0 || !$('key').value;
-    $('model').disabled = busy || catalogLoading || !$('model').value;
-    $('effort').disabled = busy;
-    $('refresh').disabled = busy || catalogLoading || !connected;
+    const lockInputs = bridge ? refineBusy : busy;
+    $('key').disabled = lockInputs || !bridge || $('key').options.length === 0 || !$('key').value;
+    $('model').disabled = lockInputs || catalogLoading || !$('model').value;
+    $('effort').disabled = lockInputs;
+    $('verbosity').disabled = lockInputs;
+    $('refresh').disabled = lockInputs || catalogLoading || !connected;
     $('connect').disabled = busy || catalogLoading;
     $('connect').hidden = Boolean(bridge);
     $('download').hidden = Boolean(bridge);
+    if (bridge) {
+      $('run-hint').textContent = '提交到 CPR 后台队列单次直出，可关闭页面';
+      $('run').disabled = refineBusy || catalogLoading || !$('key').value || !$('model').value;
+      $('run').classList.remove('is-running');
+      $('run').querySelector('use').setAttribute('href', '#i-play');
+      $('run-label').textContent = refineBusy ? '正在提交…' : '开始测试';
+      renderRefinement();
+      return;
+    }
+    $('run-hint').textContent = '单次测试发送 1 个生成请求';
     $('run').disabled = !busy && (!connected || catalogLoading || !$('key').value || !$('model').value);
     $('run').classList.toggle('is-running', busy);
     $('run').querySelector('use').setAttribute('href', busy ? '#i-stop' : '#i-play');
     $('run-label').textContent = busy ? '停止生成' : '开始测试';
-    if (bridge) renderRefinement();
   }
 
   async function request(method, path, body, query) {
@@ -538,35 +560,78 @@
 
   function renderRefinement() {
     const job = refinement?.job;
+    const queue = Array.isArray(refinement?.queue) ? refinement.queue : [];
     const active = Boolean(job && job.status !== 'done');
-    const max = refinement?.maxRounds || 3;
+    const max = refinement?.maxRounds || 1;
     $('refine-max-rounds').textContent = String(max);
-    $('refine-start').disabled = !refinement || refineReadFailed || active || refineBusy || Boolean(controller)
-      || catalogLoading || !$('key').value || !$('model').value;
     $('refine-stop').hidden = !['queued', 'running'].includes(job?.status) || job.stopRequested;
     $('refine-stop').disabled = refineBusy;
     $('refine-first').hidden = !job?.hasComparison;
     $('refine-latest').hidden = !job?.hasDraft;
     $('refine-first').disabled = $('refine-latest').disabled = refineBusy;
-    $('refine-latest').textContent = job?.status === 'done' ? '看最终稿' : '看当前稿';
+    $('refine-latest').textContent = job?.status === 'done' ? '打开结果' : '查看结果';
     $('refine-actions').hidden = !job || ($('refine-stop').hidden && $('refine-latest').hidden);
     const summary = $('refine-status');
     let progress = '正在读取任务…';
     if (job) {
-      const phase = job.status === 'running' ? '第 ' + (job.rounds + 1) + ' 轮：' + (job.rounds ? '正在评审' : '正在生成初稿')
-        : job.status === 'queued' ? '等待 CPR 后台处理（定时测试优先）'
-          : job.status === 'saving' ? '正在保存结果' : refineEnds[job.end] || '已结束';
-      progress = [job.model, phase, '已记录 ' + job.rounds + ' / ' + max + ' 轮',
-        job.stopRequested && active && '已请求停止，本轮如已开始会继续完成',
+      const phase = job.status === 'running'
+        ? (max > 1 ? '第 ' + (job.rounds + 1) + ' 轮：' + (job.rounds ? '正在评审' : '正在生成初稿') : '正在单次直出生成')
+        : job.status === 'queued' ? '排队等待 CPR 后台执行'
+          : job.status === 'saving' ? '正在保存记录' : refineEnds[job.end] || '已结束';
+      progress = [triggerLabel(job), job.model, job.verbosity && job.verbosity !== 'auto' && '详略 ' + job.verbosity,
+        phase, max > 1 && '已记录 ' + job.rounds + ' / ' + max + ' 轮',
+        job.stopRequested && active && '已请求停止，当前调用完成后不会继续',
         job.status === 'done' && refineArchives[job.archive],
-        job.status === 'done' && job.archive !== 'saved' && job.hasDraft && '可打开最终稿复制 HTML，临时稿只保留到下次任务',
+        job.status === 'done' && job.archive !== 'saved' && job.hasDraft && '可打开结果复制 HTML，临时结果只保留到下次任务',
       ].filter(Boolean).join(' · ');
     } else if (refinement) {
-      progress = '还没有多轮打磨任务。';
+      progress = '当前没有进行中的后台任务。';
     } else if (refineReadFailed) {
-      progress = '暂时无法读取多轮打磨任务。';
+      progress = '暂时无法读取后台任务。';
     }
     if (summary.textContent !== progress) summary.textContent = progress;
+    const queueBox = $('refine-queue');
+    queueBox.hidden = !queue.length;
+    if (!queue.length) {
+      renderedQueuePills.clear();
+      queueHeaderEl = null;
+      queueBox.replaceChildren();
+    } else {
+      const ids = new Set(queue.map(item => item.id));
+      for (const [id, entry] of renderedQueuePills) {
+        if (!ids.has(id)) {
+          entry.pill.remove();
+          renderedQueuePills.delete(id);
+        }
+      }
+      if (!queueHeaderEl) queueHeaderEl = element('span', '', '');
+      const headerText = '排队中（' + queue.length + '）：';
+      if (queueHeaderEl.textContent !== headerText) queueHeaderEl.textContent = headerText;
+      if (queueBox.children[0] !== queueHeaderEl) queueBox.prepend(queueHeaderEl);
+      const canAppendOnly = queue.every((item, idx) => {
+        const entry = renderedQueuePills.get(item.id);
+        return !entry || entry.sig === triggerLabel(item) + '\0' + item.model && idx >= 0;
+      });
+      if (!canAppendOnly) {
+        renderedQueuePills.clear();
+        queueBox.replaceChildren(queueHeaderEl);
+      }
+      for (const item of queue) {
+        const sig = triggerLabel(item) + '\0' + item.model;
+        let entry = renderedQueuePills.get(item.id);
+        if (!entry) {
+          const pill = element('span', 'refine-queue-item', triggerLabel(item) + ' · ' + item.model);
+          const cancel = element('button', 'record-link', '取消');
+          cancel.type = 'button';
+          cancel.addEventListener('click', () => changeRefinement('/refine/stop', { id: item.id }));
+          pill.append(cancel);
+          entry = { sig, pill, cancel };
+          renderedQueuePills.set(item.id, entry);
+          queueBox.append(pill);
+        }
+        entry.cancel.disabled = refineBusy;
+      }
+    }
     const message = refineMessage || (refineReadFailed && job ? '进度暂未更新，页面会自动重连。' : '');
     const error = $('refine-error');
     if (error.textContent !== message) error.textContent = message;
@@ -575,13 +640,16 @@
 
   function applyRefinement(snapshot) {
     if (!snapshot || !Number.isSafeInteger(snapshot.maxRounds) || snapshot.maxRounds < 1
-      || (snapshot.job !== null && !refineId.test(snapshot.job?.id))) throw new Error('无法读取多轮任务数据，请刷新页面。');
+      || (snapshot.job !== null && !anyJobId.test(snapshot.job?.id))) throw new Error('无法读取后台任务数据，请刷新页面。');
     const prior = refinement?.job;
     refinement = snapshot;
     const job = snapshot.job;
     if (job?.archive === 'saved' && (prior?.archive !== 'saved' || prior.id !== job.id)
       && !historyOffset && !historyPaging) {
       historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
+    }
+    if (job?.trigger === 'scheduled' && job?.status === 'done' && (prior?.status !== 'done' || prior.id !== job.id)) {
+      void refreshSchedule();
     }
   }
 
@@ -607,7 +675,7 @@
     refineBusy = true;
     refineVersion++;
     refineMessage = '';
-    renderRefinement();
+    controls();
     let refresh = false;
     try {
       const snapshot = await request('POST', path, body);
@@ -621,15 +689,16 @@
       }
     } finally {
       refineBusy = false;
-      if (!closed) renderRefinement();
+      if (!closed) controls();
     }
     if (refresh) await refreshRefinement();
   }
 
-  function startRefinement() {
-    if ($('refine-start').disabled) return;
+  function enqueueManualRun() {
+    if (!bridge || refineBusy || catalogLoading || !$('key').value || !$('model').value) return;
     return changeRefinement('/refine', {
-      id: 'refine-' + runId(), clientKeyId: $('key').value, model: $('model').value, effort: $('effort').value,
+      id: runId(), clientKeyId: $('key').value, model: $('model').value, effort: $('effort').value,
+      verbosity: $('verbosity').value,
     });
   }
 
@@ -648,7 +717,10 @@
       if (!validRecord(record) || record.id !== job.id || !record.source) throw new Error('暂时无法打开这份稿件。');
       refineMessage = '';
       renderRefinement();
-      return openRecord(record, true, version === 'first' ? '初稿' : job.status === 'done' ? '最终稿' : '当前稿');
+      return openRecord(record, true, {
+        label: version === 'first' ? '初稿' : job.status === 'done' ? '本次结果' : '当前结果',
+        ...(version === 'first' || job.archive !== 'saved' ? { jobId: job.id, version } : {}),
+      });
     } catch (error) {
       if (closed || intent !== openIntent) return;
       refineMessage = error.message || '暂时无法打开这份稿件，请刷新后重试。';
@@ -690,7 +762,7 @@
       : scheduleSnapshot.runningSinceMs ? '执行中' : config?.enabled ? '已启用' : config ? '已暂停' : '未设置';
     $('schedule-key').disabled = scheduleBusy || !scheduleKeys.length;
     $('schedule-model').disabled = scheduleBusy || scheduleModelLoading || $('schedule-model').options.length < 2;
-    for (const id of ['schedule-effort', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) $(id).disabled = scheduleBusy;
+    for (const id of ['schedule-effort', 'schedule-verbosity', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) $(id).disabled = scheduleBusy;
     $('schedule-save').disabled = scheduleBusy || scheduleModelLoading
       || !$('schedule-key').value || !$('schedule-model').value;
     $('schedule-pause').disabled = scheduleBusy;
@@ -765,6 +837,7 @@
         scheduleError = false;
         scheduleKeyOptions(config?.clientKeyId || $('key').value);
         $('schedule-effort').value = config?.effort || 'low';
+        $('schedule-verbosity').value = config?.verbosity || 'auto';
         $('schedule-cron').value = config?.cron || '';
         $('schedule-timezone').value = config?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
         $('schedule-enabled').checked = Boolean(config?.enabled);
@@ -813,7 +886,7 @@
   async function initialize() {
     if (controller) return;
     if (!bridge && direct) { await loadDirectModels(); return; }
-    if (!bridge || bridge.version !== 2 || typeof bridge.models?.responses !== 'function') {
+    if (!bridge || bridge.version !== 2 || typeof bridge.request !== 'function') {
       connection('独立页面预览');
       notice(localProxy ? '本地测试服务已就绪。点击“连接网关”，填写 API 密钥即可读取模型。'
         : '当前从本地文件打开。建议先运行 node scripts/serve-pelican.mjs，再打开 http://127.0.0.1:3217/，避免网关跨域限制。安装为 CPR 插件后无需此连接步骤。');
@@ -896,6 +969,7 @@
           : (record.trigger === 'manual' || record.trigger === undefined) && /^[a-f\d]{32}$/i.test(record.id))
       && Number.isSafeInteger(record.startedAtMs) && record.startedAtMs >= 0 && record.startedAtMs <= 8640000000000000
       && typeof record.model === 'string' && typeof record.effort === 'string' && Object.hasOwn(outcomes, record.outcome)
+      && (record.verbosity === undefined || ['auto', 'low', 'medium', 'high'].includes(record.verbosity))
       && (record.source === null || (typeof record.source === 'string' && record.source.length <= MAX_TEXT));
   }
 
@@ -951,7 +1025,8 @@
     time.dateTime = date.toISOString();
     cells[0].append(time, element('span', 'record-secondary', date.toLocaleTimeString('zh-CN') + ' · ' + triggerLabel(record)));
     cells[1].append(element('span', 'record-primary', record.model),
-      element('span', 'record-secondary', '推理强度 ' + (record.effort === 'auto' ? '自动' : record.effort)));
+      element('span', 'record-secondary', '推理强度 ' + (record.effort === 'auto' ? '自动' : record.effort)
+        + (record.verbosity && record.verbosity !== 'auto' ? ' · 详略 ' + record.verbosity : '')));
     cells[2].append(
       element('span', 'record-primary', 'Key · ' + identityLabel(record.clientKeyName, record.clientKeyId)),
       element('span', 'record-secondary', '上游 · ' + identityLabel(record.accountName, record.accountId)),
@@ -1068,6 +1143,7 @@
       id: runId(),
       startedAtMs: state.date.getTime(),
       model: model || state.model, effort: state.effort, outcome, trigger: 'manual',
+      ...(state.verbosity && state.verbosity !== 'auto' ? { verbosity: state.verbosity } : {}),
       ...(state.keyName ? { clientKeyName: state.keyName } : {}),
       ...(bridge ? { clientKeyId: state.keyId, gatewayRequestId: state.gatewayRequestId || null } : {}),
       durationMs: Math.round(state.duration), firstContentMs: state.firstContent === null ? null : Math.round(state.firstContent),
@@ -1274,10 +1350,93 @@
     return '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="' + policy + '"><meta charset="utf-8"><meta name="referrer" content="no-referrer"></head><body>' + html + '</body></html>';
   }
 
+  function svgMetricArea(svg) {
+    const vb = svg.getAttribute?.('viewBox');
+    if (typeof vb === 'string') {
+      const nums = vb.trim().split(/[\s,]+/).map(Number);
+      if (nums.length === 4 && nums.every(Number.isFinite) && nums[2] > 0 && nums[3] > 0) {
+        return nums[2] * nums[3];
+      }
+    }
+    const width = parseFloat(svg.getAttribute?.('width'));
+    const height = parseFloat(svg.getAttribute?.('height'));
+    return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? width * height : 0;
+  }
+
+  function isHiddenSvg(svg) {
+    const width = svg.getAttribute?.('width');
+    const height = svg.getAttribute?.('height');
+    if (width != null && parseFloat(width) === 0) return true;
+    if (height != null && parseFloat(height) === 0) return true;
+    for (let el = svg; el && typeof el.getAttribute === 'function'; el = el.parentElement) {
+      if (el.hasAttribute?.('hidden')) return true;
+      const style = el.getAttribute('style');
+      if (typeof style === 'string' && /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(style)) return true;
+    }
+    return false;
+  }
+
+  function isDefsOnlySprite(svg) {
+    if (typeof svg.querySelectorAll !== 'function') return false;
+    const defs = svg.querySelectorAll('defs, symbol');
+    if (!defs.length) return false;
+    const shapes = [...svg.querySelectorAll('path, circle, ellipse, rect, polygon, polyline, line, text, image, use')];
+    return !shapes.some(node => !node.closest?.('defs, symbol, clipPath, mask, pattern, marker'));
+  }
+
+  function selectMainSvg(root) {
+    const candidates = typeof root.querySelectorAll === 'function'
+      ? [...root.querySelectorAll('svg')]
+      : [root.querySelector('svg')].filter(Boolean);
+    if (!candidates.length) return null;
+    const topLevel = candidates.filter(node => !candidates.some(other => other !== node && other.contains?.(node)));
+    const pool = topLevel.length ? topLevel : candidates;
+    const marked = topLevel.find(node => node.hasAttribute?.('data-pelican-scene'))
+      || candidates.find(node => node.hasAttribute?.('data-pelican-scene'))
+      || root.querySelector('svg[data-pelican-scene]');
+    if (marked) return marked;
+    const visible = pool.filter(node => !isHiddenSvg(node) && !isDefsOnlySprite(node));
+    const list = visible.length ? visible : pool;
+    let best = list[0];
+    let bestScore = -1;
+    for (const svg of list) {
+      let score = svgMetricArea(svg);
+      if (svg.closest?.('header, nav, button')) score *= 0.01;
+      if (score > bestScore) {
+        bestScore = score;
+        best = svg;
+      }
+    }
+    return best;
+  }
+
+  function mergeExternalSpriteDefs(root, original, svg) {
+    const uses = svg.querySelectorAll?.('use') || [];
+    if (!uses.length) return;
+    const needed = new Set();
+    for (const node of uses) {
+      const ref = node.getAttribute?.('href') || node.getAttribute?.('xlink:href') || '';
+      if (ref.startsWith('#') && ref.length > 1) needed.add(ref.slice(1));
+    }
+    if (!needed.size) return;
+    const localIds = new Set([...(svg.querySelectorAll?.('[id]') || [])].map(el => el.getAttribute('id')).filter(Boolean));
+    const external = [...(root.querySelectorAll?.('defs [id], svg > symbol[id], symbol[id]') || [])]
+      .filter(node => !original.contains?.(node));
+    if (!external.length) return;
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    for (const item of external) {
+      const id = item.getAttribute?.('id');
+      if (!id || localIds.has(id)) continue;
+      localIds.add(id);
+      defs.append(item.cloneNode(true));
+    }
+    if (defs.children?.length) svg.prepend(defs);
+  }
+
   function svgPreview(html, thumbnail = false) {
     const template = document.createElement('template');
     template.innerHTML = html;
-    const original = template.content.querySelector('svg');
+    const original = selectMainSvg(template.content);
     if (!original) return '';
     const svg = original.cloneNode(true);
     svg.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns', 'http://www.w3.org/2000/svg');
@@ -1288,6 +1447,7 @@
     }
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
+    mergeExternalSpriteDefs(template.content, original, svg);
     svg.querySelectorAll('script, foreignObject, iframe, object, embed, a').forEach(node => node.remove());
     if (thumbnail) svg.querySelectorAll('animate, animateMotion, animateTransform, set').forEach(node => node.remove());
     for (const element of [svg, ...svg.querySelectorAll('*')]) {
@@ -1297,7 +1457,7 @@
       }
     }
     const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-    style.textContent = [...template.content.querySelectorAll('style')].filter(node => !original.contains(node)).map(node => node.textContent).join('\n');
+    style.textContent = [...(template.content.querySelectorAll?.('style') || [])].filter(node => !original.contains?.(node)).map(node => node.textContent).join('\n');
     svg.prepend(style);
     if (thumbnail) {
       const still = document.createElementNS('http://www.w3.org/2000/svg', 'style');
@@ -1350,7 +1510,24 @@
     ].filter(Boolean).join(' · '))));
   }
 
-  async function openRecord(record, preferAnimation, draftLabel = '') {
+  function isFreshTicket(ticket) {
+    return Boolean(ticket?.callbackUrl) && (!ticket.expiresAtMs || ticket.expiresAtMs - Date.now() > 5000);
+  }
+
+  function prefetchPreviewTicket(target) {
+    if (!bridge || !target?.html || typeof bridge.callbackTicket !== 'function') return;
+    const pending = bridge.callbackTicket({ path: 'preview', ttlSeconds: 300 }).then(ticket => {
+      if (openedRecord === target && target.ticketPromise === pending && isFreshTicket(ticket)) {
+        target.ticket = ticket;
+      }
+      return ticket;
+    }).catch(() => null).finally(() => {
+      if (target.ticketPromise === pending) target.ticketPromise = null;
+    });
+    target.ticketPromise = pending;
+  }
+
+  async function openRecord(record, preferAnimation, draftInfo = null) {
     const intent = ++openIntent;
     let source = record.source;
     if (!source && record.hasSource && bridge) {
@@ -1368,11 +1545,19 @@
     }
     if ((!source && !record.refinement) || closed || intent !== openIntent) return;
     const html = source ? extractDocument(source) : '';
-    openedRecord = { source, html, startedAtMs: record.startedAtMs, draftLabel };
-    $('dialog-meta').textContent = [record.model, record.effort, new Date(record.startedAtMs).toLocaleString('zh-CN'),
+    const info = typeof draftInfo === 'string' ? { label: draftInfo } : (draftInfo || {});
+    openedRecord = {
+      id: record.id, source, html, startedAtMs: record.startedAtMs,
+      draftLabel: info.label || '', jobId: info.jobId || '', draftVersion: info.version || '',
+      ticket: null, ticketPromise: null,
+    };
+    if (bridge && html) prefetchPreviewTicket(openedRecord);
+    $('dialog-meta').textContent = [record.model, record.effort,
+      record.verbosity && record.verbosity !== 'auto' ? '详略 ' + record.verbosity : '',
+      new Date(record.startedAtMs).toLocaleString('zh-CN'),
       triggerLabel(record),
       'Key ' + identityLabel(record.clientKeyName, record.clientKeyId),
-      '上游 ' + identityLabel(record.accountName, record.accountId)].join(' · ');
+      '上游 ' + identityLabel(record.accountName, record.accountId)].filter(Boolean).join(' · ');
     $('dialog-stats').textContent = [
       outcomes[record.outcome][0], '耗时 ' + seconds(record.durationMs) + ' s', '首个内容 ' + seconds(record.firstContentMs) + ' s',
       '输入 ' + count(record.inputTokens), '输出 ' + count(record.outputTokens),
@@ -1383,6 +1568,8 @@
     $('dialog-copy-status').textContent = '';
     $('dialog-source').textContent = source || '本次没有可查看的 HTML 源码。';
     $('dialog-preview').disabled = !html;
+    $('open-external').hidden = !(bridge && html && typeof bridge.callbackTicket === 'function');
+    $('open-external').disabled = !html;
     $('copy').disabled = !source;
     $('download').disabled = !html;
     recordView(preferAnimation);
@@ -1397,6 +1584,12 @@
       : animation ? '鹈鹕动画大图' : openedRecord.source ? '生成记录 · HTML 源码' : '生成记录 · 轮次';
     $('dialog-preview').setAttribute('aria-pressed', String(animation));
     $('dialog-source-button').setAttribute('aria-pressed', String(!animation));
+    const note = $('dialog-preview-note');
+    const hasScript = Boolean(bridge && animation && /<script\b/i.test(openedRecord.html));
+    note.textContent = hasScript
+      ? '页内预览仅静态显示 SVG。要播放含 JS 脚本的完整动画，请点右上角「新标签页播放 ↗」或「复制 HTML」单独打开。'
+      : '';
+    note.hidden = !hasScript;
     $('dialog-source-panel').hidden = animation;
     $('dialog-frame').hidden = !animation;
     if (animation) mountPreview($('dialog-frame'), openedRecord.html);
@@ -1406,19 +1599,21 @@
   function meta() {
     $('result-meta').hidden = !state;
     if (!state) return;
-    $('result-model').textContent = (state.actualModel || state.model) + ' · ' + state.effort;
+    $('result-model').textContent = (state.actualModel || state.model) + ' · ' + state.effort
+      + (state.verbosity && state.verbosity !== 'auto' ? ' · 详略 ' + state.verbosity : '');
     $('result-date').textContent = state.date.toLocaleString('zh-CN');
     $('result-id').textContent = state.requestId ? 'request: ' + state.requestId : state.responseId ? 'response: ' + state.responseId : '';
   }
 
   async function run() {
+    if (bridge) return enqueueManualRun();
     if (controller) { controller.abort(); return; }
-    if ((!bridge && !direct) || !$('key').value || !$('model').value || catalogLoading) return;
+    if (!direct || !$('key').value || !$('model').value || catalogLoading) return;
     controller = new AbortController();
     const signal = controller.signal;
     const keyId = $('key').value;
     state = {
-      model: $('model').value, effort: $('effort').value, actualModel: '', text: '',
+      model: $('model').value, effort: $('effort').value, verbosity: $('verbosity').value, actualModel: '', text: '',
       parts: new Map(), refusal: '', usage: {}, terminal: null,
       firstContent: null, started: performance.now(), duration: null,
       date: new Date(), requestId: '', responseId: '', gatewayRequestId: '',
@@ -1442,6 +1637,7 @@
         input: [{ role: 'user', content: [{ type: 'input_text', text: FIXED_PROMPT }] }],
       };
       if (state.effort !== 'auto') body.reasoning = { effort: state.effort };
+      if (state.verbosity && state.verbosity !== 'auto') body.text = { verbosity: state.verbosity };
       // Exactly one model request; account selection and accounting stay with CPR.
       const response = bridge
         ? await bridge.models.responses({ clientKeyId: keyId, body, signal })
@@ -1492,15 +1688,13 @@
     }
   }
 
-  async function copy() {
-    if (!openedRecord) return;
-    const record = openedRecord;
-    const text = record.html || record.source;
+  async function copyText(text, isValid = () => true) {
+    if (!isValid()) return false;
     try {
       await navigator.clipboard.writeText(text);
-      if (openedRecord === record) $('dialog-copy-status').textContent = 'HTML 已复制';
+      return true;
     } catch {
-      if (openedRecord !== record) return;
+      if (!isValid()) return false;
       const area = document.createElement('textarea');
       area.value = text;
       area.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
@@ -1509,9 +1703,66 @@
       let copied = false;
       try { copied = document.execCommand('copy'); } catch {}
       area.remove();
-      $('copy').focus();
-      if (!copied) recordView(false);
-      $('dialog-copy-status').textContent = copied ? 'HTML 已复制' : '请选中源码后复制';
+      return copied;
+    }
+  }
+
+  async function copy() {
+    if (!openedRecord) return;
+    const record = openedRecord;
+    const text = record.html || record.source;
+    const copied = await copyText(text, () => openedRecord === record);
+    if (openedRecord !== record) return;
+    $('copy').focus();
+    if (!copied) recordView(false);
+    $('dialog-copy-status').textContent = copied ? 'HTML 已复制' : '请选中源码后复制';
+  }
+
+  async function openExternalPreview() {
+    if (!bridge || !openedRecord?.html || typeof bridge.callbackTicket !== 'function') return;
+    const record = openedRecord;
+    let ticket = isFreshTicket(record.ticket) ? record.ticket : null;
+    const pending = ticket ? null : record.ticketPromise;
+    record.ticket = null;
+    record.ticketPromise = null;
+    if (!ticket && pending) {
+      try { ticket = await pending; } catch { ticket = null; }
+    }
+    if (openedRecord !== record) return;
+    if (!isFreshTicket(ticket)) {
+      try { ticket = await bridge.callbackTicket({ path: 'preview', ttlSeconds: 300 }); } catch { ticket = null; }
+    }
+    if (openedRecord !== record || !isFreshTicket(ticket)) {
+      if (openedRecord === record) {
+        $('dialog-copy-status').textContent = '暂时无法获取播放链接，请点击“复制 HTML”单独打开';
+        prefetchPreviewTicket(record);
+      }
+      return;
+    }
+    const suffix = record.jobId && record.draftVersion
+      ? 'job=' + encodeURIComponent(record.jobId) + '&version=' + encodeURIComponent(record.draftVersion)
+      : 'id=' + encodeURIComponent(record.id);
+    const previewUrl = ticket.callbackUrl + (ticket.callbackUrl.includes('?') ? '&' : '?') + suffix;
+    let isHttps = false;
+    try { isHttps = new URL(previewUrl).protocol === 'https:'; } catch {}
+    if (isHttps && typeof bridge.openExternal === 'function') {
+      try {
+        await bridge.openExternal(previewUrl);
+        if (openedRecord === record) {
+          $('dialog-copy-status').textContent = '请在上方确认框点击“打开链接”，在新标签页播放完整动画';
+          prefetchPreviewTicket(record);
+        }
+        return;
+      } catch {}
+    }
+    if (openedRecord !== record) return;
+    const copied = await copyText(previewUrl, () => openedRecord === record);
+    if (openedRecord === record) {
+      $('open-external').focus();
+      $('dialog-copy-status').textContent = copied
+        ? '已复制一次性播放链接，请粘贴到新标签页打开'
+        : '请复制此链接到新标签页打开：' + previewUrl;
+      prefetchPreviewTicket(record);
     }
   }
 
@@ -1616,7 +1867,6 @@
   $('model').addEventListener('change', controls);
   if (bridge) {
     $('refine-panel').hidden = false;
-    $('refine-start').addEventListener('click', startRefinement);
     $('refine-stop').addEventListener('click', stopRefinement);
     $('refine-first').addEventListener('click', () => openRefinementDraft('first'));
     $('refine-latest').addEventListener('click', () => openRefinementDraft('latest'));
@@ -1627,7 +1877,7 @@
       scheduleMessage = '';
       return scheduleModels('');
     });
-    for (const id of ['schedule-model', 'schedule-effort', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) {
+    for (const id of ['schedule-model', 'schedule-effort', 'schedule-verbosity', 'schedule-cron', 'schedule-timezone', 'schedule-enabled']) {
       $(id).addEventListener('input', () => { scheduleDirty = true; scheduleControls(); });
     }
     $('schedule-form').addEventListener('submit', event => {
@@ -1635,12 +1885,14 @@
       if ($('schedule-save').disabled) return;
       return changeSchedule('/schedule', {
         clientKeyId: $('schedule-key').value, model: $('schedule-model').value,
-        effort: $('schedule-effort').value, cron: $('schedule-cron').value.trim(),
+        effort: $('schedule-effort').value, verbosity: $('schedule-verbosity').value,
+        cron: $('schedule-cron').value.trim(),
         timezone: $('schedule-timezone').value.trim(), enabled: $('schedule-enabled').checked,
       });
     });
     $('schedule-pause').addEventListener('click', () => changeSchedule('/schedule/pause', {}));
   }
+  $('open-external').addEventListener('click', openExternalPreview);
   $('copy').addEventListener('click', copy);
   $('download').addEventListener('click', download);
   $('preview-tab').addEventListener('click', () => view('preview'));
@@ -1669,10 +1921,10 @@
       historyTask = historyTask.then(() => historyOffset ? undefined : loadHistory(0));
     }
     void refreshSchedule();
-    if (!refinement?.job || refinement.job.status === 'done') void refreshRefinement();
+    if (!refinement?.job || (refinement.job.status === 'done' && !(refinement.queue?.length > 0))) void refreshRefinement();
   }, 30000) : 0;
   const refinePoll = bridge ? setInterval(() => {
-    if (!closed && !document.hidden && (refineReadFailed || (refinement?.job && refinement.job.status !== 'done'))) {
+    if (!closed && !document.hidden && (refineReadFailed || (refinement?.job && refinement.job.status !== 'done') || (refinement?.queue?.length > 0))) {
       return refreshRefinement();
     }
   }, 4000) : 0;

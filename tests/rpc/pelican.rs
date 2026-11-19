@@ -17,63 +17,40 @@ const SVG: &str = "<svg viewBox='0 0 12 12'><circle r='2'/></svg>";
 const ARCHIVE: &str = "pelican-archive";
 const INDEX: &str = "pelican-archive-index";
 const REFINE: &str = "pelican-refine";
-const REVISED: &str = "<!doctype html><html><svg><circle r='4'/></svg></html>";
-const POLISHED: &str = "<!doctype html><html><svg><circle r='6'/></svg></html>";
+const RAF_DRAFT: &str = "<!doctype html><html><body><svg viewBox='0 0 800 450'><g id='w'><circle r='20'/></g></svg><script>function t(){requestAnimationFrame(t);document.getElementById('w');}</script></body></html>";
+const TRUNCATED_DRAFT: &str = "<!doctype html><html><body><svg viewBox='0 0 800 450'><circle r='20'/></svg><script>requestAnimationFrame(()=>{";
+const NO_SVG_TEXT: &str = "Sorry, no SVG diagram generated.";
 
 enum ModelReply {
     Draft,
-    Keep,
-    Replace(&'static str),
-    InvalidEdit,
+    DraftSource(&'static str),
 }
 
 impl ModelReply {
     fn batches(self) -> VecDeque<Vec<CanonicalEvent>> {
-        let ending = |reason| {
-            vec![
-                CanonicalEvent::Usage {
-                    usage: Usage {
-                        input_tokens: Some(7),
-                        output_tokens: Some(19),
-                        reasoning_tokens: Some(3),
-                        ..Usage::default()
-                    },
+        let text = match self {
+            Self::Draft => SVG,
+            Self::DraftSource(text) => text,
+        };
+        VecDeque::from([vec![
+            CanonicalEvent::TextDelta {
+                index: 0,
+                text: text.into(),
+            },
+            CanonicalEvent::Usage {
+                usage: Usage {
+                    input_tokens: Some(7),
+                    output_tokens: Some(19),
+                    reasoning_tokens: Some(3),
+                    ..Usage::default()
                 },
-                CanonicalEvent::Completed {
-                    id: "fixture-response".into(),
-                    model: Some("resolved-model".into()),
-                    reason,
-                },
-            ]
-        };
-        let (name, args) = match self {
-            Self::Draft => {
-                let mut events = vec![CanonicalEvent::TextDelta {
-                    index: 0,
-                    text: SVG.into(),
-                }];
-                events.extend(ending(FinishReason::Stop));
-                return VecDeque::from([events]);
-            }
-            Self::Keep => ("finish_draft", "{}".to_string()),
-            Self::Replace(html) => ("replace_draft", json!({"html": html}).to_string()),
-            Self::InvalidEdit => ("replace_draft", r#"{"html":"<html><svg>"#.into()),
-        };
-        let tool = |name: Option<&str>, arguments: &str| CanonicalEvent::ToolCallDelta {
-            index: 1,
-            id: if name.is_some() {
-                "call-edit"
-            } else {
-                "fc-edit"
-            }
-            .into(),
-            name: name.map(str::to_owned),
-            arguments: arguments.into(),
-        };
-        let (first, last) = args.split_at(args.len() / 2);
-        let mut end = vec![tool(None, last)];
-        end.extend(ending(FinishReason::ToolCall));
-        VecDeque::from([vec![tool(Some(name), ""), tool(None, first)], end])
+            },
+            CanonicalEvent::Completed {
+                id: "fixture-response".into(),
+                model: Some("resolved-model".into()),
+                reason: FinishReason::Stop,
+            },
+        ]])
     }
 }
 
@@ -82,6 +59,7 @@ struct Fixture {
     state: BTreeMap<(String, String), (u64, Value)>,
     issued_slots: BTreeSet<u64>,
     reject_next_claim: bool,
+    reject_next_plan_claim: bool,
     reject_generation: bool,
     usage_key_mismatch: bool,
     data_writes_before_full: Option<usize>,
@@ -126,7 +104,18 @@ impl Fixture {
                     ));
                 }
                 if key.0 == "pelican-schedule"
-                    && params["value"]["pending"].is_object()
+                    && key.1 == "plan"
+                    && !params["value"]["lastClaimedSlotMs"].is_null()
+                    && std::mem::take(&mut self.reject_next_plan_claim)
+                {
+                    return Err(PluginFault::new(
+                        ErrorCode::Conflict,
+                        "fixture plan changed concurrently",
+                    ));
+                }
+                if key.0 == REFINE
+                    && key.1 == "job"
+                    && params["value"]["active"]["phase"]["state"] == "running"
                     && std::mem::take(&mut self.reject_next_claim)
                 {
                     return Err(PluginFault::new(ErrorCode::Conflict, "fixture claim lost"));
@@ -195,60 +184,48 @@ impl Fixture {
                     .unwrap()
                     .0;
                 let input: Value = serde_json::from_slice(payload).unwrap();
-                let expected = json!({
+                let mut expected = json!({
                     "model": "fixture-model", "stream": true, "store": false, "tools": [],
                     "reasoning": {"effort": "high"},
                     "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
                 });
                 assert!(self.stream_batches.is_empty());
-                let slot = self
-                    .state
-                    .get(&("pelican-schedule".into(), "plan".into()))
-                    .and_then(|(_, plan)| plan["pending"]["slotMs"].as_u64());
-                let reply = if let Some(slot) = slot {
+                let active = &self.state[&(REFINE.into(), "job".into())].1["active"];
+                assert_eq!(active["phase"]["state"], "running", "claim precedes dispatch");
+                let verbosity = active["selection"]["verbosity"].as_str().unwrap_or("auto");
+                if verbosity != "auto" {
+                    expected["text"] = json!({"verbosity": verbosity});
+                }
+                let id = active["selection"]["id"].as_str().unwrap().to_owned();
+                if let Some(slot) = active["selection"]["scheduledAtMs"].as_u64()
+                    && active["rounds"].as_array().unwrap().is_empty()
+                {
                     assert!(
                         self.issued_slots.insert(slot),
                         "the same slot dispatched twice"
                     );
-                    assert_eq!(input, expected);
-                    ModelReply::Draft
-                } else {
-                    let job = &self.state[&(REFINE.into(), "job".into())].1;
-                    assert_eq!(job["phase"]["state"], "running", "claim precedes dispatch");
-                    let id = job["selection"]["id"].as_str().unwrap().to_owned();
-                    let completed = job["rounds"].as_array().unwrap().len();
-                    assert!(
-                        self.refinement_claims.insert((id, completed)),
-                        "a round dispatched twice"
-                    );
-                    if completed == 0 {
-                        assert_eq!(
-                            input, expected,
-                            "draft uses the untouched prompt and parameters"
-                        );
-                    } else {
-                        assert_eq!(input["input"][0], expected["input"][0]);
-                        assert_eq!(input["tool_choice"], "required");
-                        assert_eq!(input["parallel_tool_calls"], false);
-                        let tools: Vec<_> = input["tools"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(|tool| tool["name"].as_str().unwrap())
-                            .collect();
-                        assert_eq!(tools, ["replace_draft", "finish_draft"]);
-                    }
-                    self.refinements.push(input);
-                    self.model_replies
-                        .pop_front()
-                        .expect("unexpected refinement request")
-                };
+                }
+                let completed = active["rounds"].as_array().unwrap().len();
+                assert_eq!(completed, 0, "single-round mode never dispatches a second call");
+                assert!(
+                    self.refinement_claims.insert((id, completed)),
+                    "a job dispatched twice"
+                );
+                assert_eq!(
+                    input, expected,
+                    "single-round request must use the untouched prompt and parameters"
+                );
+                self.refinements.push(input);
                 if self.reject_generation {
                     return Err(PluginFault::new(
                         ErrorCode::PermissionDenied,
                         "fixture Key disabled",
                     ));
                 }
+                let reply = self
+                    .model_replies
+                    .pop_front()
+                    .expect("unexpected refinement request");
                 self.stream_batches = reply.batches();
                 json!({"stream": "fixture-stream", "request_id": REQUEST})
             }
@@ -310,6 +287,25 @@ impl Fixture {
         .await
     }
 
+    async fn callback_preview(&mut self, host: &mut Host, method: &str, path: &str, query: &str) -> (u16, String, String) {
+        let (result, payload) = rpc_call(
+            host,
+            "management.callback",
+            Stage::PublicManagement,
+            json!({
+                "method": method,
+                "path": path,
+                "query": query,
+                "content_type": null,
+            }),
+            Vec::new(),
+            &mut |cb_method, params, cb_payload| self.callback(cb_method, params, cb_payload),
+        )
+        .await;
+        let meta: super::ManagementResponse = serde_json::from_value(result).unwrap();
+        (meta.status, meta.content_type, String::from_utf8(payload).unwrap())
+    }
+
     async fn tick(&mut self, host: &mut Host) {
         let (result, payload) = rpc_call(
             host,
@@ -327,22 +323,13 @@ impl Fixture {
 
 fn settings(enabled: bool) -> Value {
     json!({"enabled": enabled, "clientKeyId": KEY, "model": "fixture-model", "effort": "high",
-        "cron": "* * * * *", "timezone": "UTC"})
+        "verbosity": "medium", "cron": "* * * * *", "timezone": "UTC"})
 }
 
 fn refinement(id: u32) -> (String, Value) {
-    let id = format!("refine-{id:032x}");
-    let input = json!({"id": id, "clientKeyId": KEY, "model": "fixture-model", "effort": "high"});
+    let id = format!("{id:032x}");
+    let input = json!({"id": id, "clientKeyId": KEY, "model": "fixture-model", "effort": "high", "verbosity": "high"});
     (id, input)
-}
-
-fn draft_received(body: &Value) -> &str {
-    body["input"][1]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .split_once("\n\nCurrent HTML draft:\n")
-        .unwrap()
-        .1
 }
 
 fn state_key(params: &Value) -> (String, String) {
@@ -361,89 +348,126 @@ fn record(id: u32, source: &str) -> Value {
 }
 
 #[tokio::test]
-async fn refinement_uses_the_checkpoint_after_restart_and_stops_at_the_cap() {
+async fn manual_background_job_persists_draft_serves_preview_and_archives_single_run() {
     let mut host = start().await;
     let mut fixture = Fixture {
-        model_replies: VecDeque::from([
-            ModelReply::Draft,
-            ModelReply::Replace(REVISED),
-            ModelReply::Replace(POLISHED),
-        ]),
+        model_replies: VecDeque::from([ModelReply::DraftSource(RAF_DRAFT)]),
         ..Fixture::default()
     };
     let (id, input) = refinement(1);
     let (code, submitted) = fixture.management(&mut host, "/refine", Some(&input)).await;
     assert_eq!(code, 200);
+    assert_eq!(submitted["maxRounds"], 1);
     assert_eq!(submitted["job"]["status"], "queued");
+    assert_eq!(submitted["job"]["verbosity"], "high");
     assert_eq!(
         fixture.management(&mut host, "/refine", Some(&input)).await,
         (200, submitted)
     );
-    assert_eq!(
-        fixture
-            .management(&mut host, "/refine", Some(&refinement(2).1))
-            .await
-            .0,
-        409
-    );
+    let (queued_id, queued_input) = refinement(2);
+    let (q_code, queued_reply) = fixture
+        .management(&mut host, "/refine", Some(&queued_input))
+        .await;
+    assert_eq!(q_code, 200);
+    assert_eq!(queued_reply["queuedCount"], 1);
+    let (stop_q_code, after_cancel) = fixture
+        .management(&mut host, "/refine/stop", Some(&json!({"id": queued_id})))
+        .await;
+    assert_eq!(stop_q_code, 200);
+    assert_eq!(after_cancel["queuedCount"], 0);
     assert!(fixture.refinements.is_empty());
-    fixture.tick(&mut host).await;
     host.shutdown().await;
 
     let mut host = start().await;
-    let (_, resumed) = fixture.management(&mut host, "/refine", None).await;
-    assert_eq!(resumed["job"]["rounds"], 1);
-    assert_eq!(resumed["job"]["hasDraft"], true);
-    assert_eq!(
-        fixture.refinements.len(),
-        1,
+    let (_, before_tick) = fixture.management(&mut host, "/refine", None).await;
+    assert_eq!(before_tick["job"]["status"], "queued");
+    assert!(
+        fixture.refinements.is_empty(),
         "opening the page cannot start another call"
     );
     fixture.tick(&mut host).await;
-    assert_eq!(draft_received(&fixture.refinements[1]), SVG);
-    fixture.tick(&mut host).await;
-    assert_eq!(draft_received(&fixture.refinements[2]), REVISED);
-    fixture.tick(&mut host).await;
-    assert_eq!(fixture.refinements.len(), 3);
+    assert_eq!(fixture.refinements.len(), 1);
+    host.shutdown().await;
 
+    let mut host = start().await;
     let (_, done) = fixture.management(&mut host, "/refine", None).await;
-    assert_eq!(done["job"]["end"], "limit_reached");
+    assert_eq!(done["maxRounds"], 1);
+    assert_eq!(done["job"]["rounds"], 1);
+    assert_eq!(done["job"]["end"], "accepted");
     assert_eq!(done["job"]["archive"], "saved");
-    assert_eq!(done["job"]["hasComparison"], true);
-    for (version, source) in [("first", SVG), ("latest", POLISHED)] {
-        let (code, item) = fixture
-            .management(
-                &mut host,
-                &format!("/refine/draft?id={id}&version={version}"),
-                None,
-            )
-            .await;
-        assert_eq!(code, 200);
-        assert_eq!(item["record"]["source"], source);
-    }
+    assert_eq!(done["job"]["hasDraft"], true);
+    assert_eq!(done["job"]["hasComparison"], false);
+    assert_eq!(
+        fixture.refinements.len(),
+        1,
+        "restarting after completion cannot dispatch a second round"
+    );
+    let (code, item) = fixture
+        .management(&mut host, &format!("/refine/draft?id={id}&version=latest"), None)
+        .await;
+    assert_eq!(code, 200);
+    assert_eq!(item["record"]["source"], RAF_DRAFT);
+    let (cb_status, cb_ct, cb_body) = fixture
+        .callback_preview(&mut host, "GET", "preview", &format!("state=ticket&job={id}&version=latest"))
+        .await;
+    assert_eq!(cb_status, 200);
+    assert_eq!(cb_ct, "text/html; charset=utf-8");
+    assert_eq!(cb_body, RAF_DRAFT);
+
     let (_, page) = fixture.management(&mut host, "/history", None).await;
     assert_eq!(page["total"], 1);
     let archived = &page["records"][0];
     assert_eq!(archived["id"], id);
-    assert_eq!(archived["trigger"], "refined");
-    assert_eq!(archived["source"], POLISHED);
-    assert_eq!(archived["inputTokens"], 21);
-    assert_eq!(archived["outputTokens"], 57);
-    assert_eq!(archived["refinement"]["rounds"][1]["action"], "revised");
+    assert_eq!(archived["trigger"], "manual");
+    assert_eq!(archived["verbosity"], "high");
+    assert_eq!(archived["outcome"], "generated");
+    assert_eq!(archived["source"], RAF_DRAFT);
+    assert_eq!(archived["inputTokens"], 7);
+    assert_eq!(archived["outputTokens"], 19);
+    assert_eq!(archived["reasoningTokens"], 3);
+    assert!(archived["refinement"].is_null());
+
+    // Reject new legacy refine-* submissions while keeping preview fallback after job eviction.
+    let mut legacy_input = input.clone();
+    legacy_input["id"] = json!(format!("refine-{id}"));
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&legacy_input))
+            .await
+            .0,
+        400
+    );
+    fixture.model_replies.push_back(ModelReply::Draft);
+    let (_, next_input) = refinement(3);
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&next_input))
+            .await
+            .0,
+        200
+    );
+    fixture.tick(&mut host).await;
+    let (evicted_status, _, evicted_body) = fixture
+        .callback_preview(&mut host, "GET", "preview", &format!("state=ticket&job={id}&version=latest"))
+        .await;
+    assert_eq!(evicted_status, 200);
+    assert_eq!(evicted_body, RAF_DRAFT);
     host.shutdown().await;
 }
 
 #[tokio::test]
-async fn approval_and_invalid_edits_both_end_early_without_losing_the_draft() {
+async fn incomplete_and_nosvg_single_runs_keep_source_and_verbosity_auto_omits_text() {
     let mut host = start().await;
     let mut fixture = Fixture::default();
-    for (n, reply, end, action) in [
-        (1, ModelReply::Keep, "accepted", "accepted"),
-        (2, ModelReply::InvalidEdit, "review_failed", "failed"),
-        (3, ModelReply::Replace(SVG), "accepted", "accepted"),
-    ] {
-        fixture.model_replies.extend([ModelReply::Draft, reply]);
-        let (id, input) = refinement(n);
+    let cases = [
+        (1, "auto", ModelReply::DraftSource(RAF_DRAFT), "accepted", "generated", RAF_DRAFT),
+        (2, "low", ModelReply::DraftSource(TRUNCATED_DRAFT), "draft_failed", "incomplete", TRUNCATED_DRAFT),
+        (3, "medium", ModelReply::DraftSource(NO_SVG_TEXT), "draft_failed", "no_svg", NO_SVG_TEXT),
+    ];
+    for (n, verbosity, reply, expected_end, expected_outcome, expected_source) in cases {
+        fixture.model_replies.push_back(reply);
+        let (id, mut input) = refinement(n);
+        input["verbosity"] = json!(verbosity);
         assert_eq!(
             fixture
                 .management(&mut host, "/refine", Some(&input))
@@ -451,35 +475,41 @@ async fn approval_and_invalid_edits_both_end_early_without_losing_the_draft() {
                 .0,
             200
         );
-        for _ in 0..3 {
-            fixture.tick(&mut host).await;
-        }
+        fixture.tick(&mut host).await;
         let (_, done) = fixture.management(&mut host, "/refine", None).await;
-        assert_eq!(done["job"]["rounds"], 2);
-        assert_eq!(done["job"]["end"], end);
+        assert_eq!(done["job"]["rounds"], 1);
+        assert_eq!(done["job"]["end"], expected_end);
         assert_eq!(done["job"]["hasComparison"], false);
         let (_, saved) = fixture
             .management(&mut host, &format!("/history/record?id={id}"), None)
             .await;
-        assert_eq!(saved["record"]["source"], SVG);
-        assert_eq!(saved["record"]["outcome"], "generated");
-        let review = &saved["record"]["refinement"]["rounds"][1];
-        assert_eq!(review["action"], action);
-        if end == "review_failed" {
-            assert_eq!(review["issue"], "review_invalid");
-        }
+        assert_eq!(saved["record"]["source"], expected_source);
+        assert_eq!(saved["record"]["outcome"], expected_outcome);
+        assert!(saved["record"]["refinement"].is_null());
     }
-    assert_eq!(fixture.refinements.len(), 6);
+    assert!(fixture.refinements[0].get("text").is_none());
+    assert_eq!(fixture.refinements[1]["text"], json!({"verbosity": "low"}));
+    assert_eq!(fixture.refinements[2]["text"], json!({"verbosity": "medium"}));
+    assert_eq!(fixture.refinements.len(), 3);
     host.shutdown().await;
 }
 
 #[tokio::test]
-async fn schedule_gets_priority_and_stopping_keeps_draft_even_if_archive_is_full() {
+async fn manual_and_scheduled_queue_concurrently_without_starvation_and_keep_draft_if_full() {
     let mut host = start().await;
     let mut fixture = Fixture {
-        model_replies: VecDeque::from([ModelReply::Draft]),
+        model_replies: VecDeque::from([ModelReply::Draft, ModelReply::DraftSource(RAF_DRAFT)]),
         ..Fixture::default()
     };
+    let (id, mut input) = refinement(1);
+    input["verbosity"] = json!("auto");
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&input))
+            .await
+            .0,
+        200
+    );
     assert_eq!(
         fixture
             .management(&mut host, "/schedule", Some(&settings(true)))
@@ -488,34 +518,21 @@ async fn schedule_gets_priority_and_stopping_keeps_draft_even_if_archive_is_full
         200
     );
     fixture.plan()["armedAfterSlotMs"] = json!(0);
-    let (id, input) = refinement(1);
-    assert_eq!(
-        fixture
-            .management(&mut host, "/refine", Some(&input))
-            .await
-            .0,
-        200
-    );
-    fixture.tick(&mut host).await;
-    assert_eq!(fixture.issued_slots.len(), 1);
-    assert!(fixture.refinements.is_empty());
-    fixture
-        .management(&mut host, "/schedule/pause", Some(&json!({})))
-        .await;
-    fixture.tick(&mut host).await;
-    assert_eq!(fixture.refinements.len(), 1);
-
-    let (_, stop) = fixture
-        .management(&mut host, "/refine/stop", Some(&json!({"id": id})))
-        .await;
-    assert_eq!(stop["job"]["stopRequested"], true);
     fixture.data_writes_before_full = Some(0);
     fixture.tick(&mut host).await;
-    fixture.tick(&mut host).await;
-    let (_, done) = fixture.management(&mut host, "/refine", None).await;
-    assert_eq!(done["job"]["end"], "stopped");
-    assert_eq!(done["job"]["archive"], "full");
     assert_eq!(fixture.refinements.len(), 1);
+    let (_, done) = fixture.management(&mut host, "/refine", None).await;
+    assert_eq!(done["job"]["id"], id);
+    assert_eq!(done["job"]["end"], "accepted");
+    assert_eq!(done["job"]["archive"], "full");
+    assert_eq!(done["queuedCount"], 1);
+    assert_eq!(done["queue"][0]["trigger"], "scheduled");
+    let (_, sched_queued) = fixture.management(&mut host, "/schedule", None).await;
+    assert!(
+        sched_queued["runningSinceMs"].is_null(),
+        "queued scheduled task must not report runningSinceMs before it starts"
+    );
+
     let (_, draft) = fixture
         .management(
             &mut host,
@@ -524,9 +541,40 @@ async fn schedule_gets_priority_and_stopping_keeps_draft_even_if_archive_is_full
         )
         .await;
     assert_eq!(draft["record"]["source"], SVG);
+
+    fixture.data_writes_before_full = None;
+    fixture
+        .management(&mut host, "/schedule/pause", Some(&json!({})))
+        .await;
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.refinements.len(), 2);
+    assert_eq!(fixture.issued_slots.len(), 1);
     let (_, page) = fixture.management(&mut host, "/history", None).await;
-    assert_eq!(page["total"], fixture.issued_slots.len());
+    assert_eq!(page["total"], 1);
     assert_eq!(page["records"][0]["trigger"], "scheduled");
+    assert_eq!(page["records"][0]["verbosity"], "medium");
+    assert_eq!(page["records"][0]["source"], RAF_DRAFT);
+    assert!(page["records"][0]["refinement"].is_null());
+
+    // Stopping a queued job before dispatch cancels it with Outcome::Stopped.
+    let (stop_id, stop_input) = refinement(2);
+    assert_eq!(
+        fixture
+            .management(&mut host, "/refine", Some(&stop_input))
+            .await
+            .0,
+        200
+    );
+    let (_, stopped) = fixture
+        .management(&mut host, "/refine/stop", Some(&json!({"id": stop_id})))
+        .await;
+    assert_eq!(stopped["job"]["stopRequested"], true);
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.refinements.len(), 2);
+    let (_, stop_record) = fixture
+        .management(&mut host, &format!("/history/record?id={stop_id}"), None)
+        .await;
+    assert_eq!(stop_record["record"]["outcome"], "stopped");
     host.shutdown().await;
 }
 
@@ -591,10 +639,19 @@ async fn archive_pages_survive_restart_and_open_legacy_and_chunked_source() {
     }
     let mut invalid = record(132, SVG);
     invalid["apiKey"] = json!("a-placeholder-secret");
+    let mut forged_refine = record(133, SVG);
+    forged_refine["refinement"] = json!({"end": "accepted", "rounds": []});
     let before = fixture.state.clone();
     assert_eq!(
         fixture
             .management(&mut host, "/history", Some(&invalid))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&forged_refine))
             .await
             .0,
         400
@@ -650,6 +707,7 @@ async fn quota_keeps_older_results_and_a_scheduled_save_failure_releases_the_cla
         404
     );
 
+    fixture.model_replies.push_back(ModelReply::Draft);
     assert_eq!(
         fixture
             .management(&mut host, "/schedule", Some(&settings(true)))
@@ -658,6 +716,8 @@ async fn quota_keeps_older_results_and_a_scheduled_save_failure_releases_the_cla
         200
     );
     fixture.plan()["armedAfterSlotMs"] = json!(0);
+    fixture.tick(&mut host).await;
+    fixture.tick(&mut host).await;
     fixture.tick(&mut host).await;
     assert_eq!(fixture.issued_slots.len(), 1);
     let issued = *fixture.issued_slots.first().unwrap();
@@ -744,7 +804,10 @@ async fn history_accepts_only_the_matching_gateway_account() {
 #[tokio::test]
 async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
     let mut host = start().await;
-    let mut fixture = Fixture::default();
+    let mut fixture = Fixture {
+        model_replies: VecDeque::from([ModelReply::DraftSource(RAF_DRAFT)]),
+        ..Fixture::default()
+    };
     let (_, status) = fixture.management(&mut host, "/schedule", None).await;
     assert!(status["settings"].is_null());
     let mut invalid = settings(true);
@@ -787,6 +850,12 @@ async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
 
     // The fixture makes an enabled plan eligible now without waiting for the wall clock minute.
     fixture.plan()["armedAfterSlotMs"] = json!(0);
+    fixture.reject_next_plan_claim = true;
+    fixture.tick(&mut host).await;
+    assert!(
+        fixture.issued_slots.is_empty() && !fixture.state.contains_key(&(REFINE.into(), "job".into())),
+        "a lost plan CAS must not leave a stale scheduled task in the queue"
+    );
     fixture.reject_next_claim = true;
     fixture.tick(&mut host).await;
     assert!(
@@ -796,17 +865,21 @@ async fn scheduled_generation_is_claimed_persisted_and_paused_by_the_host() {
     fixture.tick(&mut host).await;
     assert_eq!(fixture.issued_slots.len(), 1);
     let issued_slot = *fixture.issued_slots.first().unwrap();
+    let (_, done_plan) = fixture.management(&mut host, "/schedule", None).await;
+    assert!(done_plan["runningSinceMs"].is_null());
     let (_, history) = fixture.management(&mut host, "/history", None).await;
     let record = &history["records"][0];
     assert_eq!(record["trigger"], "scheduled");
     assert_eq!(record["scheduledAtMs"], issued_slot);
+    assert_eq!(record["verbosity"], "medium");
     assert_eq!(record["gatewayRequestId"], REQUEST);
     assert_eq!(record["accountName"], "Routed Fixture Account");
     assert_eq!(record["clientKeyName"], "Fixture Key");
     assert_eq!(record["model"], "resolved-model");
     assert_eq!(record["outcome"], "generated");
     assert_eq!(record["outputTokens"], 19);
-    assert_eq!(record["source"], SVG);
+    assert_eq!(record["source"], RAF_DRAFT);
+    assert!(record["refinement"].is_null());
     host.shutdown().await;
 
     let mut restarted = start().await;
@@ -838,26 +911,212 @@ async fn rejected_and_abandoned_slots_record_failure_without_replaying() {
     );
     fixture.plan()["armedAfterSlotMs"] = json!(0);
     fixture.tick(&mut host).await;
+    fixture.tick(&mut host).await;
     let (_, history) = fixture.management(&mut host, "/history", None).await;
     assert_eq!(fixture.issued_slots.len(), 1);
     assert_eq!(history["records"][0]["outcome"], "failed");
     assert_eq!(history["records"][0]["issue"], "key_unavailable");
+    assert!(history["records"][0]["refinement"].is_null());
 
-    let abandoned = (Utc::now().timestamp_millis() as u64 / 60_000 - 5) * 60_000;
+    // Simulate an in-flight running scheduled job: fresh lease reports runningSinceMs and does not replay; expired lease records Interrupted.
+    let inflight_slot = (Utc::now().timestamp_millis() as u64 / 60_000 - 1) * 60_000;
+    let inflight_recent = Utc::now().timestamp_millis() as u64 - 10_000;
+    fixture.state.insert(
+        (REFINE.into(), "job".into()),
+        (
+            1,
+            json!({
+                "active": {
+                    "selection": {
+                        "id": format!("scheduled-{inflight_slot}"),
+                        "clientKeyId": KEY,
+                        "model": "fixture-model",
+                        "effort": "high",
+                        "trigger": "scheduled",
+                        "scheduledAtMs": inflight_slot,
+                    },
+                    "record": {
+                        "id": "",
+                        "startedAtMs": inflight_recent,
+                        "model": "",
+                        "effort": "",
+                        "outcome": "failed",
+                        "durationMs": 0,
+                        "sourceOmitted": false
+                    },
+                    "rounds": [],
+                    "initial": null,
+                    "latest": null,
+                    "phase": {"state": "running", "since_ms": inflight_recent},
+                    "stopRequested": false
+                },
+                "queue": []
+            }),
+        ),
+    );
+    fixture.plan()["settings"]["enabled"] = json!(false);
+    let (_, running_plan) = fixture.management(&mut host, "/schedule", None).await;
+    assert_eq!(running_plan["runningSinceMs"], inflight_recent);
+    fixture.tick(&mut host).await;
+    assert_eq!(fixture.issued_slots.len(), 1, "active lease must not replay");
+
+    let stale_ms = Utc::now().timestamp_millis() as u64 - 480_000;
+    fixture.state.get_mut(&(REFINE.into(), "job".into())).unwrap().1["active"]["phase"]["since_ms"] =
+        json!(stale_ms);
+    fixture.tick(&mut host).await;
+
+    let abandoned = (Utc::now().timestamp_millis() as u64 / 60_000 - 8) * 60_000;
     fixture.plan()["pending"] = json!({"slotMs": abandoned, "startedAtMs": abandoned,
         "clientKeyId": KEY, "keyName": "Fixture Key", "model": "fixture-model", "effort": "high"});
-    fixture.plan()["settings"]["enabled"] = json!(false);
-    fixture.tick(&mut host).await;
     fixture.tick(&mut host).await;
     assert_eq!(fixture.issued_slots.len(), 1);
     let (_, history) = fixture.management(&mut host, "/history", None).await;
     let records = history["records"].as_array().unwrap();
-    assert_eq!(records.len(), 2);
-    let interrupted = records
-        .iter()
-        .find(|record| record["scheduledAtMs"] == abandoned)
-        .unwrap();
-    assert_eq!(interrupted["issue"], "interrupted");
+    assert_eq!(records.len(), 3);
+    for expected_slot in [inflight_slot, abandoned] {
+        let interrupted = records
+            .iter()
+            .find(|record| record["scheduledAtMs"] == expected_slot)
+            .unwrap();
+        assert_eq!(interrupted["issue"], "interrupted");
+        assert_eq!(interrupted["durationMs"], 0);
+        assert!(interrupted["refinement"].is_null());
+    }
     assert!(fixture.plan()["pending"].is_null());
+
+    // Recover a durably recorded pendingEnqueue slot if execution paused/crashed before refine enqueue finished.
+    let recovered_slot = (Utc::now().timestamp_millis() as u64 / 60_000 - 2) * 60_000;
+    fixture.reject_generation = false;
+    fixture.model_replies.push_back(ModelReply::Draft);
+    fixture.plan()["lastClaimedSlotMs"] = json!(recovered_slot);
+    fixture.plan()["pendingEnqueue"] = json!({
+        "slotMs": recovered_slot,
+        "startedAtMs": recovered_slot,
+        "clientKeyId": KEY,
+        "keyName": "Fixture Key",
+        "model": "fixture-model",
+        "effort": "high",
+        "verbosity": "medium"
+    });
+    fixture.tick(&mut host).await;
+    assert!(fixture.plan()["pendingEnqueue"].is_null());
+    let (_, after_recover) = fixture.management(&mut host, "/history", None).await;
+    assert_eq!(after_recover["records"].as_array().unwrap().len(), 4);
+    let recovered = after_recover["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["scheduledAtMs"] == recovered_slot)
+        .unwrap();
+    assert_eq!(recovered["outcome"], "generated");
+    assert_eq!(recovered["source"], SVG);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn preview_callback_serves_complete_html_and_returns_html_errors() {
+    let mut host = start().await;
+    let (result, reg_payload) = rpc_call(
+        &mut host,
+        "management.register",
+        Stage::Registration,
+        json!({}),
+        Vec::new(),
+        &mut |method, _, _| panic!("registration must not call host: {method}"),
+    )
+    .await;
+    assert_eq!(result, json!({}));
+    let reg: Value = serde_json::from_slice(&reg_payload).unwrap();
+    assert_eq!(reg["callbacks"][0]["path"], "preview");
+    assert_eq!(
+        reg["callbacks"][0]["response_content_types"],
+        json!(["text/html; charset=utf-8"])
+    );
+
+    let mut fixture = Fixture::default();
+    let fenced_svg = format!("Here:\n```html\n{SVG}\n```");
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&record(1, &fenced_svg)))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        fixture
+            .management(&mut host, "/history", Some(&record(2, RAF_DRAFT)))
+            .await
+            .0,
+        200
+    );
+
+    let (status, ct, body) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            "state=opaque&id=00000000000000000000000000000001",
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(ct, "text/html; charset=utf-8");
+    assert!(body.starts_with("<!doctype html>"));
+    assert!(body.contains(SVG));
+
+    let (status, ct, body) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            "state=opaque&id=00000000000000000000000000000002",
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(ct, "text/html; charset=utf-8");
+    assert_eq!(body, RAF_DRAFT);
+
+    let (status, ct, _) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            "state=opaque&id=99999999999999999999999999999999",
+        )
+        .await;
+    assert_eq!(status, 404);
+    assert_eq!(ct, "text/html; charset=utf-8");
+
+    let (status, ct, body) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            "%73%74%61%74%65=opaque&%69%64=00000000000000000000000000000001",
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(ct, "text/html; charset=utf-8");
+    assert!(body.contains(SVG));
+
+    fixture.state.insert(
+        (ARCHIVE.into(), "run-00000000000000000000000000000003".into()),
+        (1, json!("corrupt-stored-shape")),
+    );
+    let (status, ct, _) = fixture
+        .callback_preview(
+            &mut host,
+            "GET",
+            "preview",
+            "state=opaque&id=00000000000000000000000000000003",
+        )
+        .await;
+    assert_eq!(status, 502);
+    assert_eq!(ct, "text/html; charset=utf-8");
+
+    let (status, ct, _) = fixture
+        .callback_preview(&mut host, "GET", "preview", "state=opaque&unknown=1")
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(ct, "text/html; charset=utf-8");
     host.shutdown().await;
 }

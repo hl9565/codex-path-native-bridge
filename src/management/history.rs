@@ -4,7 +4,7 @@ use gateway_plugin_sdk::{ErrorCode, PluginFault, client::HostClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{identity, invalid, state, valid_effort};
+use super::{default_verbosity, identity, invalid, is_auto_verbosity, state, valid_effort, valid_verbosity};
 
 pub(super) use archive::append;
 
@@ -22,6 +22,8 @@ pub(super) struct Record {
     pub started_at_ms: u64,
     pub model: String,
     pub effort: String,
+    #[serde(default = "default_verbosity", skip_serializing_if = "is_auto_verbosity")]
+    pub verbosity: String,
     pub outcome: Outcome,
     pub duration_ms: u64,
     pub first_content_ms: Option<u64>,
@@ -62,7 +64,7 @@ pub(super) enum Outcome {
     Failed,
 }
 
-#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Trigger {
     #[default]
@@ -79,6 +81,7 @@ pub(super) enum Issue {
     KeyUnavailable,
     ModelFailed,
     OutputLimit,
+    #[allow(dead_code)]
     ReviewInvalid,
 }
 
@@ -95,6 +98,7 @@ pub(super) enum RefinementEnd {
     Accepted,
     LimitReached,
     DraftFailed,
+    #[allow(dead_code)]
     ReviewFailed,
     Interrupted,
     Stopped,
@@ -104,7 +108,9 @@ pub(super) enum RefinementEnd {
 #[serde(rename_all = "snake_case")]
 pub(super) enum RefineAction {
     Drafted,
+    #[allow(dead_code)]
     Revised,
+    #[allow(dead_code)]
     Accepted,
     Failed,
     Interrupted,
@@ -149,12 +155,11 @@ pub(super) fn scheduled_id(slot_ms: u64) -> String {
 impl Record {
     fn is_valid(&self) -> bool {
         let id_valid = match (self.trigger, self.scheduled_at_ms) {
-            (Trigger::Manual, None) => valid_manual_id(&self.id) && self.refinement.is_none(),
+            (Trigger::Manual, None) => valid_manual_id(&self.id),
             (Trigger::Scheduled, Some(slot)) => {
                 self.id == scheduled_id(slot)
                     && slot <= self.started_at_ms
                     && slot.is_multiple_of(60_000)
-                    && self.refinement.is_none()
             }
             (Trigger::Refined, None) => valid_refinement_id(&self.id) && self.refinement.is_some(),
             _ => false,
@@ -163,6 +168,7 @@ impl Record {
             && self.started_at_ms <= 8_640_000_000_000_000
             && identity::valid_text(&self.model, 512)
             && valid_effort(&self.effort)
+            && valid_verbosity(&self.verbosity)
             && self
                 .first_content_ms
                 .is_none_or(|time| time <= self.duration_ms)
@@ -228,7 +234,7 @@ pub(super) async fn save_manual(host: &HostClient, payload: &[u8]) -> Result<Val
         return Err(too_large());
     }
     let mut record: Record = serde_json::from_slice(payload).map_err(|_| invalid())?;
-    if record.trigger != Trigger::Manual || !record.is_valid() {
+    if record.trigger != Trigger::Manual || record.refinement.is_some() || !record.is_valid() {
         return Err(invalid());
     }
     // Keys and accounts in CPR history are populated from host data, not a submitted label.
@@ -248,17 +254,31 @@ pub(super) fn valid_refinement_id(id: &str) -> bool {
     id.strip_prefix("refine-").is_some_and(valid_manual_id)
 }
 
-fn valid_manual_id(id: &str) -> bool {
+pub(super) fn valid_manual_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn valid_id(id: &str) -> bool {
-    valid_manual_id(id)
-        || valid_refinement_id(id)
-        || id.strip_prefix("scheduled-").is_some_and(|slot| {
-            slot.parse::<u64>()
-                .is_ok_and(|slot| id == scheduled_id(slot) && slot.is_multiple_of(60_000))
-        })
+pub(super) fn valid_scheduled_id(id: &str) -> bool {
+    id.strip_prefix("scheduled-").is_some_and(|slot| {
+        slot.parse::<u64>()
+            .is_ok_and(|slot| id == scheduled_id(slot) && slot.is_multiple_of(60_000))
+    })
+}
+
+pub(super) fn valid_id(id: &str) -> bool {
+    valid_manual_id(id) || valid_refinement_id(id) || valid_scheduled_id(id)
+}
+
+pub(super) async fn load_source(
+    host: &HostClient,
+    id: &str,
+) -> Result<Option<String>, PluginFault> {
+    if !valid_id(id) {
+        return Err(invalid());
+    }
+    Ok(archive::detail(host, id)
+        .await?
+        .and_then(|record| record.source))
 }
 
 pub(super) async fn contains(host: &HostClient, id: &str) -> Result<bool, PluginFault> {

@@ -12,8 +12,8 @@ use gateway_plugin_sdk::{
     call::{
         host::{self, ModelListRequest, ModelListResult},
         management::{
-            ManagementPage, ManagementRegistration, ManagementRequest, ManagementResource,
-            ManagementResponse, ManagementRoute,
+            ManagementCallback, ManagementPage, ManagementRegistration, ManagementRequest,
+            ManagementResource, ManagementResponse, ManagementRoute,
         },
         middleware::MiddlewareHeader,
     },
@@ -57,12 +57,159 @@ pub(super) fn registration() -> ManagementRegistration {
         pages: vec![ManagementPage {
             id: "pelican".into(),
             title: "鹈鹕".into(),
-            description: Some("测试 SVG 动画生成，支持单次、定时和多轮打磨。".into()),
+            description: Some("测试 SVG 动画生成，支持后台队列与定时任务。".into()),
             entry: "web/pelican.html".into(),
             icon: None,
         }],
-        callbacks: Vec::new(),
+        callbacks: vec![ManagementCallback {
+            path: "preview".into(),
+            response_content_types: vec!["text/html; charset=utf-8".into()],
+        }],
     }
+}
+
+pub(crate) async fn callback_handle(
+    call: TypedCall<ManagementRequest>,
+) -> Result<TypedReply<ManagementResponse>, PluginFault> {
+    if call.request.method != "GET"
+        || call.request.path != "preview"
+        || !call.payload.is_empty()
+    {
+        return Ok(html_reply(400, "预览请求方式或路径无效。"));
+    }
+    let query = match parse_preview_query(&call.request.query) {
+        Ok(query) => query,
+        Err(()) => return Ok(html_reply(400, "预览链接参数无效，请返回插件页重新打开。")),
+    };
+    let source = match query {
+        PreviewQuery::History { id } => {
+            if !history::valid_id(&id) {
+                return Ok(html_reply(400, "预览记录标识无效，请返回插件页重新打开。"));
+            }
+            history::load_source(&call.host, &id).await
+        }
+        PreviewQuery::Draft { job, version } => {
+            if !refine::valid_job_id(&job) {
+                return Ok(html_reply(400, "预览记录标识无效，请返回插件页重新打开。"));
+            }
+            match refine::draft_source(&call.host, &job, &version).await {
+                Ok(None) if version == "latest" && history::valid_id(&job) => {
+                    history::load_source(&call.host, &job).await
+                }
+                other => other,
+            }
+        }
+    };
+    let html = match source {
+        Ok(Some(source)) => generation::extract_document_html(&source),
+        Ok(None) => None,
+        Err(_) => {
+            return Ok(html_reply(502, "暂时无法读取该记录源码，请返回插件页重试。"));
+        }
+    };
+    match html {
+        Some(html) => Ok(html_document_reply(200, html.into_bytes())),
+        None => Ok(html_reply(
+            404,
+            "未找到可播放的动画源码，可能记录不存在或尚未生成，请返回插件页重试。",
+        )),
+    }
+}
+
+enum PreviewQuery {
+    History { id: String },
+    Draft { job: String, version: String },
+}
+
+fn parse_preview_query(query: &str) -> Result<PreviewQuery, ()> {
+    if query.is_empty() {
+        return Err(());
+    }
+    let mut id = None;
+    let mut job = None;
+    let mut version = None;
+    for part in query.split('&').filter(|part| !part.is_empty()) {
+        let (raw_name, raw_value) = part.split_once('=').ok_or(())?;
+        let name = percent_decode(raw_name).ok_or(())?;
+        let value = percent_decode(raw_value).ok_or(())?;
+        match name.as_str() {
+            "state" => {}
+            "id" => {
+                if id.is_some() || value.is_empty() {
+                    return Err(());
+                }
+                id = Some(value);
+            }
+            "job" => {
+                if job.is_some() || value.is_empty() {
+                    return Err(());
+                }
+                job = Some(value);
+            }
+            "version" => {
+                if version.is_some() || !matches!(value.as_str(), "first" | "latest") {
+                    return Err(());
+                }
+                version = Some(value);
+            }
+            _ => return Err(()),
+        }
+    }
+    match (id, job, version) {
+        (Some(id), None, None) => Ok(PreviewQuery::History { id }),
+        (None, Some(job), Some(version)) => Ok(PreviewQuery::Draft { job, version }),
+        _ => Err(()),
+    }
+}
+
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = hex_nibble(*bytes.get(i + 1)?)?;
+            let lo = hex_nibble(*bytes.get(i + 2)?)?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn html_reply(status: u16, message: &str) -> TypedReply<ManagementResponse> {
+    let body = format!(
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>鹈鹕预览</title></head><body style=\"margin:0;padding:32px;\
+         font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0\">\
+         <p>{message}</p></body></html>"
+    );
+    html_document_reply(status, body.into_bytes())
+}
+
+fn html_document_reply(status: u16, payload: Vec<u8>) -> TypedReply<ManagementResponse> {
+    TypedReply::new(ManagementResponse {
+        status,
+        content_type: "text/html; charset=utf-8".into(),
+        headers: vec![MiddlewareHeader {
+            name: "cache-control".into(),
+            value: b"no-store".to_vec(),
+        }],
+    })
+    .with_payload(payload)
 }
 
 pub(super) async fn handle(
@@ -114,6 +261,9 @@ pub(super) async fn handle(
                 ErrorCode::PermissionDenied => (403, "没有访问权限，或所选 Client Key 不可用"),
                 ErrorCode::Conflict if call.request.path.starts_with("schedule") => {
                     (409, "定时计划刚刚发生变化，请刷新后重试。")
+                }
+                ErrorCode::Conflict if error.message == "pelican refine queue full" => {
+                    (409, "当前排队任务较多，请等待已有任务完成后再试。")
                 }
                 ErrorCode::Conflict if call.request.path.starts_with("refine") => {
                     (409, "当前有多轮任务或任务状态已变化，请查看最新进度。")
@@ -168,6 +318,18 @@ fn valid_effort(effort: &str) -> bool {
         effort,
         "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
     )
+}
+
+pub(super) fn default_verbosity() -> String {
+    "auto".into()
+}
+
+pub(super) fn is_auto_verbosity(verbosity: &str) -> bool {
+    verbosity.is_empty() || verbosity == "auto"
+}
+
+pub(super) fn valid_verbosity(verbosity: &str) -> bool {
+    matches!(verbosity, "auto" | "low" | "medium" | "high")
 }
 
 async fn callback<I: Serialize, O: DeserializeOwned>(

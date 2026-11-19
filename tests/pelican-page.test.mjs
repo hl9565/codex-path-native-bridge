@@ -12,6 +12,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 class Element {
   constructor(id = '') {
     this.id = id;
+    this.tagName = id.toUpperCase();
     this.children = [];
     this.options = [];
     this.handlers = new Map();
@@ -21,27 +22,70 @@ class Element {
     this.textContent = '';
     this.dataset = {};
     this.attributes = new Map();
+    this.parent = null;
     this.scrollHeight = this.clientHeight = 100;
     this.scrollTop = 0;
     this.style = {};
-    this.classList = { toggle() {} };
+    this.classList = { toggle() {}, remove() {} };
   }
   get value() { return this.currentValue ?? this.options[0]?.value ?? ''; }
   set value(value) { this.currentValue = value; }
-  append(...children) { this.children.push(...children); }
-  prepend(...children) { this.children.unshift(...children); }
+  append(...children) {
+    for (const child of children) if (child && typeof child === 'object') child.parent = this;
+    this.children.push(...children);
+  }
+  prepend(...children) {
+    for (const child of children) if (child && typeof child === 'object') child.parent = this;
+    this.children.unshift(...children);
+  }
   replaceChildren(...children) {
+    for (const child of children) if (child && typeof child === 'object') child.parent = this;
     this.children = children;
     this.options = children.filter(child => child?.isOption);
     this.currentValue = undefined;
   }
   addEventListener(name, handler) { this.handlers.set(name, handler); }
   async fire(name) { return this.handlers.get(name)?.({ preventDefault() {} }); }
-  setAttribute(name, value) { this.attributes.set(name, value); }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  setAttributeNS(_ns, name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  hasAttribute(name) { return this.attributes.has(name); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  cloneNode() {
+    const copy = new Element(this.id);
+    copy.tagName = this.tagName;
+    copy.attributes = new Map(this.attributes);
+    copy.raw = this.raw;
+    return copy;
+  }
+  contains(node) {
+    let cur = node;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur.parent;
+    }
+    return false;
+  }
+  closest(selector) {
+    const tags = selector.split(',').map(s => s.trim().toLowerCase());
+    let cur = this;
+    while (cur) {
+      if (tags.includes(cur.tagName?.toLowerCase())) return cur;
+      cur = cur.parent;
+    }
+    return null;
+  }
   querySelector() { return new Element(); }
+  querySelectorAll(selector) { return this._qsa?.get(selector) ?? []; }
   focus() {}
   select() {}
-  remove() {}
+  remove() {
+    if (this.parent?.children) {
+      const idx = this.parent.children.indexOf(this);
+      if (idx >= 0) this.parent.children.splice(idx, 1);
+    }
+    this.parent = null;
+  }
   showModal() { this.open = true; }
   close() { this.open = false; this.handlers.get('close')?.(); }
 }
@@ -60,19 +104,32 @@ function storage(maxEntries = Infinity) {
   };
 }
 
-async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = storage() } = {}) {
+async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = storage(), clipboard } = {}) {
   const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], new Element(match[1])]));
   elements.get('effort').value = 'low';
+  elements.get('verbosity').value = 'auto';
+  elements.get('schedule-verbosity').value = 'auto';
   const document = {
     documentElement: new Element(), body: new Element(),
     getElementById: id => elements.get(id) ?? null,
     querySelector: selector => proxy && selector.includes('pelican-local-proxy') ? { content: '1' } : null,
     createElement: tag => {
       const node = new Element(tag);
-      // Real SVG parsing/rendering is exercised in the browser.
-      if (tag === 'template') node.content = { querySelector: () => null };
+      if (tag === 'template') {
+        node.content = {
+          querySelector: selector => {
+            if (selector === 'svg[data-pelican-scene]' && /data-pelican-scene/i.test(node.innerHTML || '')) {
+              const svgs = parseTemplateSvgs(node.innerHTML);
+              return svgs.find(s => s.hasAttribute('data-pelican-scene')) ?? null;
+            }
+            return null;
+          },
+          querySelectorAll: selector => selector === 'svg' ? parseTemplateSvgs(node.innerHTML || '') : [],
+        };
+      }
       return node;
     },
+    createElementNS: (_ns, tag) => new Element(tag),
     createTextNode: text => text,
   };
   let timestamp = 1_700_000_000_000;
@@ -86,7 +143,9 @@ async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = st
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [timestamp += 1_000])); } },
     Option: class { constructor(text, value) { this.text = this.textContent = text; this.value = value; this.isOption = true; } },
     fetch: fetchImpl ?? (() => { throw new Error('Unexpected network request'); }),
-    navigator: {}, performance, Intl, URL, Headers, Response, Blob, TextDecoder, TextEncoder, AbortController, AbortSignal, DOMException, TypeError,
+    navigator: clipboard ? { clipboard } : {},
+    XMLSerializer: class { serializeToString(node) { return node.raw || '<svg></svg>'; } },
+    performance, Intl, URL, Headers, Response, Blob, TextDecoder, TextEncoder, AbortController, AbortSignal, DOMException, TypeError,
     setTimeout: () => 0, clearTimeout() {},
     setInterval(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
     clearInterval: id => timers.delete(id),
@@ -104,6 +163,44 @@ async function page({ fetch: fetchImpl, bridge, proxy = false, localStorage = st
     await elements.get('connection-form').fire('submit');
     await tick();
   } };
+}
+
+function parseTemplateSvgs(markup) {
+  const results = [];
+  for (const match of markup.matchAll(/<svg\b([^>]*)>([\s\S]*?)<\/svg>/gi)) {
+    const el = new Element('svg');
+    el.raw = match[0];
+    const attrs = match[1];
+    for (const attr of attrs.matchAll(/([a-zA-Z0-9:-]+)(?:=(?:"([^"]*)"|'([^']*)'))?/g)) {
+      el.setAttribute(attr[1], attr[2] ?? attr[3] ?? '');
+    }
+    const inner = match[2];
+    const defsMatches = inner.match(/<(?:defs|symbol)\b/gi) || [];
+    const outsideDefs = inner.replace(/<(defs|symbol|clipPath|mask|pattern|marker)\b[\s\S]*?<\/\1>/gi, '');
+    const shapeMatches = outsideDefs.match(/<(?:path|circle|ellipse|rect|polygon|polyline|line|text|image|use)\b/gi) || [];
+    const toNodeList = items => ({
+      length: items.length,
+      [Symbol.iterator]: () => items[Symbol.iterator](),
+    });
+    el._qsa = new Map([
+      ['defs, symbol', toNodeList(defsMatches.map(() => new Element('defs')))],
+      ['path, circle, ellipse, rect, polygon, polyline, line, text, image, use', toNodeList(shapeMatches.map(() => new Element('path')))],
+    ]);
+    const before = markup.slice(0, match.index);
+    let parent = null;
+    if (/<(?:header|nav|button)\b[^>]*>(?![\s\S]*<\/(?:header|nav|button)>)/i.test(before)) {
+      parent = new Element('header');
+    } else if (/<div\b([^>]*)>(?![\s\S]*<\/div>)/i.test(before)) {
+      const divMatch = before.match(/<div\b([^>]*)>(?![\s\S]*<\/div>)/i);
+      parent = new Element('div');
+      if (/\bhidden\b/i.test(divMatch[1])) parent.setAttribute('hidden', '');
+      const styleMatch = divMatch[1].match(/style\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+      if (styleMatch) parent.setAttribute('style', styleMatch[1] ?? styleMatch[2] ?? '');
+    }
+    el.parent = el.parentElement = parent;
+    results.push(el);
+  }
+  return results;
 }
 
 test('a failed connection exposes its reason inside the still-open dialog', async () => {
@@ -146,69 +243,45 @@ test('HTTP 401 is explained as an API-key failure inside the dialog', async () =
   assert.match(error.textContent, /API.*密钥|API Key|Client Key/);
 });
 
-test('one click sends the literal prompt once and preserves streamed source and usage', async () => {
-  const generations = [];
-  const stored = [];
+test('standalone mode sends the literal prompt with optional verbosity and saves local history', async () => {
+  const bodies = [];
+  const localStorage = storage();
   const output = '<!doctype html><html><body><p>鹈鹕</p></body></html>';
   const events = [
     { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: output },
     { type: 'response.completed', response: { id: 'fixture-response', model: 'test-model', status: 'completed', output: [], usage: { input_tokens: 21, output_tokens: 31, input_tokens_details: { cached_tokens: 4 }, output_tokens_details: { reasoning_tokens: 8 } } } },
   ];
   const bytes = new TextEncoder().encode(events.map(event => 'data: ' + JSON.stringify(event) + '\r\n\r\n').join(''));
-  const bridge = {
-    version: 2, theme: 'light',
-    request: async ({ method, path: relativePath, body }) => {
-      assert.ok(!relativePath.startsWith('/'), 'CPR requires an instance-relative path');
-      const path = '/' + relativePath;
-      let response;
-      if (path === '/bootstrap') response = { prompt: PROMPT, keys: [{ id: 'key-id', name: 'Fixture Key', enabled: true }] };
-      else if (path === '/models') response = { models: ['test-model'] };
-      else if (path === '/schedule') response = { settings: null };
-      else if (path === '/history') {
-        if (method === 'POST') {
-          const record = JSON.parse(body);
-          assert.equal(record.gatewayRequestId, 'host-request-1');
-          assert.equal(record.clientKeyId, 'key-id');
-          stored.unshift({ ...record, accountName: 'Routed Account' });
-          response = { saved: true };
-        } else {
-          response = { records: stored, total: stored.length, snapshot: stored.length };
-        }
-      } else throw new Error('Unexpected management route');
-      return { status: 200, body: new TextEncoder().encode(JSON.stringify(response)).buffer };
-    },
-    models: { responses: async input => {
-      generations.push(input);
+  const p = await page({
+    proxy: true,
+    localStorage,
+    fetch: async (url, init) => {
+      if (url === '/api/models') return Response.json({ data: [{ id: 'test-model' }] });
+      assert.equal(url, '/api/responses');
+      bodies.push(JSON.parse(init.body));
       return new Response(new ReadableStream({ start(stream) {
         for (let index = 0; index < bytes.length; index += 7) stream.enqueue(bytes.slice(index, index + 7));
         stream.close();
-      } }), { headers: { 'content-type': 'text/event-stream', 'x-gateway-request-id': 'host-request-1', 'x-request-id': 'provider-request-1' } });
-    } },
-  };
-  const p = await page({ bridge });
-  // SVG image serialization belongs to browser QA; assert the real stream/request path here.
+      } }), { headers: { 'content-type': 'text/event-stream', 'x-request-id': 'provider-request-1' } });
+    },
+  });
+  await p.submit();
+  p.elements.get('verbosity').value = 'high';
   await p.elements.get('run').fire('click');
   await tick();
-  assert.equal(generations.length, 1);
-  assert.equal(generations[0].body.input[0].content[0].text, PROMPT);
-  assert.equal(generations[0].clientKeyId, 'key-id');
-  assert.equal(generations[0].body.reasoning.effort, 'low');
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].input[0].content[0].text, PROMPT);
+  assert.equal(bodies[0].reasoning.effort, 'low');
+  assert.deepEqual(bodies[0].text, { verbosity: 'high' });
   assert.equal(p.elements.get('source').textContent, output);
   assert.equal(p.elements.get('input-tokens').textContent, '21');
   assert.equal(p.elements.get('output-tokens').textContent, '31');
-  assert.equal(stored.length, 1);
-  assert.equal(stored[0].outcome, 'no_svg');
-  assert.equal(stored[0].source, output);
-  assert.equal(stored[0].reasoningTokens, 8);
-  assert.equal(stored[0].trigger, 'manual');
-  assert.equal(stored[0].clientKeyName, 'Fixture Key');
-  assert.doesNotMatch(JSON.stringify(stored), /provider-request-1|apiKey/);
-  assert.equal(p.elements.get('history-rows').children[0].children[2].children[1].textContent, '上游 · Routed Account');
+  assert.equal(p.elements.get('history-rows').children[0].children[3].children[0].textContent, '未返回 SVG');
 
-  const reopened = await page({ bridge });
-  assert.equal(reopened.elements.get('history-count').textContent, '1 条');
-  assert.equal(reopened.elements.get('history-rows').children[0].children[3].children[0].textContent, '未返回 SVG');
-  assert.equal(generations.length, 1);
+  p.elements.get('verbosity').value = 'auto';
+  await p.elements.get('run').fire('click');
+  await tick();
+  assert.equal(bodies[1].text, undefined);
 });
 
 test('standalone history survives reload and opens the older animation without rerunning', async () => {
@@ -286,7 +359,7 @@ test('hosted scheduling config is independent of the manual run and can be pause
   elements.get('schedule-key').value = 'scheduled-id';
   await elements.get('schedule-key').fire('change');
   for (const [id, value] of Object.entries({
-    'schedule-model': 'nightly-model', 'schedule-effort': 'high',
+    'schedule-model': 'nightly-model', 'schedule-effort': 'high', 'schedule-verbosity': 'high',
     'schedule-cron': '0 9 * * 1-5', 'schedule-timezone': 'Asia/Shanghai',
   })) {
     elements.get(id).value = value;
@@ -296,7 +369,7 @@ test('hosted scheduling config is independent of the manual run and can be pause
   await elements.get('schedule-form').fire('submit');
   assert.deepEqual(settings, {
     enabled: true, clientKeyId: 'scheduled-id', model: 'nightly-model',
-    effort: 'high', cron: '0 9 * * 1-5', timezone: 'Asia/Shanghai',
+    effort: 'high', verbosity: 'high', cron: '0 9 * * 1-5', timezone: 'Asia/Shanghai',
   });
   assert.match(elements.get('schedule-status').textContent, /下一次.*Asia\/Shanghai/);
   assert.equal(elements.get('model').value, 'manual-model');
@@ -322,15 +395,29 @@ function archivedRecord(n, source) {
   };
 }
 
-test('hosted refinement is queued once, reopened and compared from the saved job', async () => {
+test('hosted manual button enqueues refinement, selects main SVG, and opens external playback', async () => {
   let job = null;
   let saved = null;
   let directCalls = 0;
   const mutations = [];
-  const first = '<svg><title>First ride</title></svg>';
-  const revised = '<svg><title>Revised ride</title></svg>';
+  const openedExternal = [];
+  const copiedTexts = [];
+  let callbackOrigin = 'https://cpr.example.test';
+  let ticketCounter = 0;
+  const draftHtml = '<!doctype html><html><body><div hidden><svg viewBox="0 0 2400 2400"><circle r="40"/></svg></div><svg class="sprite" viewBox="0 0 2000 2000"><defs><symbol id="sp"><path d="M0 0h10"/></symbol></defs></svg><header><svg width="24" height="24" viewBox="0 0 24 24"></svg></header><svg viewBox="0 0 1080 540"><circle r="10"/><title>Single ride</title></svg><script>requestAnimationFrame(()=>{})</script></body></html>';
   const bridge = {
     version: 2,
+    callbackTicket: async ({ path, ttlSeconds }) => {
+      assert.equal(path, 'preview');
+      assert.equal(ttlSeconds, 300);
+      ticketCounter += 1;
+      return {
+        state: 'ticket-' + ticketCounter,
+        expiresAtMs: Date.now() + 300_000,
+        callbackUrl: callbackOrigin + '/api/v1/plugins/callbacks/inst/sha/1/preview?state=ticket-' + ticketCounter,
+      };
+    },
+    openExternal: async url => { openedExternal.push(url); },
     request: async ({ method, path, body, query }) => {
       const input = body && JSON.parse(body);
       let data;
@@ -341,59 +428,66 @@ test('hosted refinement is queued once, reopened and compared from the saved job
       else if (path === 'refine' || path === 'refine/stop') {
         if (method === 'POST') {
           mutations.push({ path, input });
-          if (path === 'refine') job = { ...input, status: 'queued', rounds: 0 };
+          if (path === 'refine') job = { ...input, trigger: 'manual', status: 'queued', rounds: 0 };
           else job = { ...job, stopRequested: true };
         }
-        data = { job, maxRounds: 3 };
+        data = { job, queue: [], queuedCount: 0, maxRounds: 1 };
       } else if (path === 'refine/draft') {
-        assert.ok(query === 'id=' + job.id + '&version=first' || query === 'id=' + job.id + '&version=latest');
-        data = { record: { ...saved, refinement: undefined, source: query.endsWith('=first') ? first : revised } };
+        assert.equal(query, 'id=' + job.id + '&version=latest');
+        data = { record: { ...saved, refinement: undefined, source: draftHtml } };
       } else throw new Error('Unexpected route ' + path);
       return { status: 200, body: new TextEncoder().encode(JSON.stringify(data)) };
     },
     models: { responses() { directCalls++; throw new Error('Unexpected model request'); } },
   };
 
-  const original = await page({ bridge });
-  const begin = original.elements.get('refine-start');
+  const original = await page({ bridge, clipboard: { writeText: async text => { copiedTexts.push(text); } } });
+  original.elements.get('verbosity').value = 'high';
+  const begin = original.elements.get('run');
   assert.equal(begin.disabled, false);
   await begin.fire('click');
-  await begin.fire('click');
   assert.equal(mutations.length, 1);
-  assert.match(job.id, /^refine-[a-f\d]{32}$/);
-  assert.deepEqual(mutations[0].input, { id: job.id, clientKeyId: 'test-key', model: 'test-model', effort: 'low' });
-  assert.match(original.elements.get('refine-status').textContent, /等待 CPR 后台处理/);
+  assert.match(job.id, /^[a-f\d]{32}$/);
+  assert.deepEqual(mutations[0].input, { id: job.id, clientKeyId: 'test-key', model: 'test-model', effort: 'low', verbosity: 'high' });
+  assert.match(original.elements.get('refine-status').textContent, /排队等待 CPR 后台执行/);
+  assert.doesNotMatch(original.elements.get('refine-status').textContent, /已记录/);
   original.close();
 
-  job = { ...job, status: 'running', rounds: 2, hasDraft: true, hasComparison: true };
-  const reopened = await page({ bridge });
+  job = { ...job, status: 'running', rounds: 0, hasDraft: false, hasComparison: false };
+  const reopened = await page({ bridge, clipboard: { writeText: async text => { copiedTexts.push(text); } } });
   const { elements } = reopened;
-  assert.match(elements.get('refine-status').textContent, /第 3 轮.*正在评审/);
+  assert.match(elements.get('refine-status').textContent, /正在单次直出生成/);
   await elements.get('refine-stop').fire('click');
   assert.deepEqual(mutations[1], { path: 'refine/stop', input: { id: job.id } });
   assert.match(elements.get('refine-status').textContent, /已请求停止/);
-  job = { ...job, status: 'done', end: 'accepted', archive: 'saved', rounds: 3 };
-  saved = { ...archivedRecord(1, revised), id: job.id, trigger: 'refined',
-    refinement: { end: 'accepted', rounds: [
-      { action: 'drafted', model: 'test-model', durationMs: 1100, outputTokens: 27 },
-      { action: 'revised', model: 'test-model', durationMs: 1200, outputTokens: 31 },
-      { action: 'accepted', model: 'test-model', durationMs: 1300, outputTokens: 3 },
-    ] } };
+  job = { ...job, status: 'done', end: 'accepted', archive: 'saved', rounds: 1, hasDraft: true };
+  saved = { ...archivedRecord(1, draftHtml), id: job.id, trigger: 'manual', verbosity: 'high' };
   await reopened.poll(4000);
-  assert.match(elements.get('refine-status').textContent, /评审通过.*已存入生成记录/);
+  assert.match(elements.get('refine-status').textContent, /已完成.*已存入生成记录/);
   assert.equal(elements.get('history-count').textContent, '1 条');
-  assert.match(elements.get('history-rows').children[0].children[0].children[1].textContent, /多轮打磨/);
-  await elements.get('refine-first').fire('click');
-  assert.match(elements.get('dialog-title').textContent, /初稿/);
-  assert.equal(elements.get('dialog-source').textContent, first);
-  await elements.get('close-dialog').fire('click');
+  assert.equal(elements.get('refine-first').hidden, true);
+  const thumbBtn = elements.get('history-rows').children[0].children[5].children[0].children[0];
+  const thumbImg = thumbBtn.children.find(c => c.tagName === 'IMG');
+  assert.ok(thumbImg);
+  assert.match(decodeURIComponent(thumbImg.src), /1080 540/);
+  assert.doesNotMatch(decodeURIComponent(thumbImg.src), /2400 2400/);
+  assert.doesNotMatch(decodeURIComponent(thumbImg.src), /24 24/);
+
   await elements.get('refine-latest').fire('click');
-  assert.match(elements.get('dialog-title').textContent, /最终稿/);
-  assert.equal(elements.get('dialog-source').textContent, revised);
+  assert.match(elements.get('dialog-title').textContent, /本次结果/);
+  assert.equal(elements.get('open-external').hidden, false);
+  assert.equal(elements.get('dialog-preview-note').hidden, false);
+  assert.match(elements.get('dialog-preview-note').textContent, /新标签页播放/);
+  // Archived saved result uses permanent id= URL so rotating state.active never breaks playback;
+  // changing callbackOrigin before click 1 primes click 2's HTTP clipboard fallback prefetch.
+  callbackOrigin = 'http://127.0.0.1:8080';
+  await elements.get('open-external').fire('click');
+  assert.equal(openedExternal.length, 1);
+  assert.match(openedExternal[0], new RegExp(`&id=${job.id}$`));
+  await elements.get('open-external').fire('click');
+  assert.equal(copiedTexts.length, 1);
+  assert.match(copiedTexts[0], new RegExp(`^http:\\/\\/127\\.0\\.0\\.1:8080\\/.*&id=${job.id}$`));
   await elements.get('close-dialog').fire('click');
-  const actions = elements.get('history-rows').children[0].children[5].children[0];
-  await actions.children.at(-1).fire('click');
-  assert.match(elements.get('dialog-round-list').children[1].textContent, /修改稿件.*输出 31/);
   assert.equal(mutations.length, 2);
   assert.equal(directCalls, 0);
 });
@@ -467,4 +561,54 @@ test('browser quota preserves legacy history and keeps the rejected source acces
   const oldest = elements.get('history-rows').children[0].children[5].children[0];
   await oldest.children[1].fire('click');
   assert.match(elements.get('dialog-source').textContent, /legacy 0/);
+});
+
+test('external playback refreshes expired prefetched tickets and ignores stale clipboard writes after closing', async () => {
+  const sample = archivedRecord(1, '<svg class="sprite" viewBox="0 0 2000 2000"><defs><symbol id="bg"><path d="M0 0"/></symbol></defs></svg><svg viewBox="0 0 600 300"><circle r="8"/></svg>');
+  const issuedTickets = [];
+  const copied = [];
+  let rejectExternal = null;
+  let ticketCall = 0;
+  const bridge = {
+    version: 2,
+    callbackTicket: async () => {
+      ticketCall += 1;
+      const ticket = {
+        state: 't-' + ticketCall,
+        expiresAtMs: ticketCall === 1 ? Date.now() - 10_000 : Date.now() + 300_000,
+        callbackUrl: 'https://cpr.example.test/cb?state=t-' + ticketCall,
+      };
+      issuedTickets.push(ticket.state);
+      return ticket;
+    },
+    openExternal: () => new Promise((_, reject) => { rejectExternal = reject; }),
+    request: async ({ path }) => {
+      let data;
+      if (path === 'bootstrap') data = { prompt: PROMPT, keys: [{ id: 'k1', enabled: true }] };
+      else if (path === 'models') data = { models: ['m1'] };
+      else if (path === 'schedule') data = { settings: null };
+      else if (path === 'refine') data = { job: null, queue: [], queuedCount: 0, maxRounds: 1 };
+      else if (path === 'history') data = { records: [sample], total: 1, snapshot: 1 };
+      else throw new Error('Unexpected route ' + path);
+      return { status: 200, body: new TextEncoder().encode(JSON.stringify(data)) };
+    },
+    models: { responses() { throw new Error('Unexpected direct model call'); } },
+  };
+  const { elements } = await page({ bridge, clipboard: { writeText: async text => copied.push(text) } });
+  const thumbBtn = elements.get('history-rows').children[0].children[5].children[0].children[0];
+  const thumbImg = thumbBtn.children.find(c => c.tagName === 'IMG');
+  assert.match(decodeURIComponent(thumbImg.src), /600 300/);
+  assert.doesNotMatch(decodeURIComponent(thumbImg.src), /2000 2000/);
+
+  await thumbBtn.fire('click');
+  await tick();
+  assert.deepEqual(issuedTickets, ['t-1']);
+
+  const clickPromise = elements.get('open-external').fire('click');
+  await tick();
+  assert.deepEqual(issuedTickets, ['t-1', 't-2']);
+  elements.get('close-dialog').fire('click');
+  rejectExternal(new Error('user dismissed'));
+  await clickPromise;
+  assert.deepEqual(copied, []);
 });

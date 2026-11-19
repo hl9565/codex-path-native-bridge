@@ -6,8 +6,8 @@
 use std::{process::Stdio, time::Duration};
 
 use gateway_plugin_sdk::{
-    CallContext, Capability, Contributions, ErrorCode, Frame, FrameError, Handshake, Manifest,
-    Message, PROTOCOL_VERSION, PluginFault, Stage,
+    CallBudgets, CallContext, Capability, Contributions, ErrorCode, Frame, FrameError, Handshake,
+    Manifest, Message, PROTOCOL_VERSION, PluginFault, Stage,
     call::{management::ManagementResponse, registration::Registration},
     client::{read_frame, write_frame},
 };
@@ -95,7 +95,7 @@ async fn start() -> Host {
         } => {
             assert_eq!(protocol_version, PROTOCOL_VERSION);
             assert_eq!(incarnation, INCARNATION);
-            assert!(call_budgets.is_empty());
+            assert_eq!(call_budgets, CallBudgets::from([(Stage::Maintenance, 360_000)]));
         }
         other => panic!("expected Ready, got {other:?}"),
     }
